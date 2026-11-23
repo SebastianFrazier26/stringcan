@@ -1,7 +1,6 @@
 use stringcan_core::FeeModel;
 use stringcan_payments::{
     ChargeRequest, FakeProcessor, PaymentProcessor, ProcessorError, StripeConfig,
-    StripeTestProcessor,
 };
 
 fn req(key: &str, customer: &str, gross: i64) -> ChargeRequest {
@@ -11,6 +10,7 @@ fn req(key: &str, customer: &str, gross: i64) -> ChargeRequest {
         currency: "usd".into(),
         customer_ref: customer.into(),
         description: "period 1".into(),
+        ..ChargeRequest::default()
     }
 }
 
@@ -54,18 +54,4 @@ fn stripe_config_refuses_live_and_malformed_keys() {
     );
     let ok = StripeConfig::new("sk_test_abcdefghijkl").unwrap();
     assert!(!format!("{ok:?}").contains("abcdefghijkl"));
-}
-
-#[tokio::test]
-async fn stripe_stub_builds_the_request_but_never_sends() {
-    let form = StripeTestProcessor::payment_intent_form(&req("k", "cus_1", 1234)).unwrap();
-    assert!(form.contains(&("amount".into(), "1234".into())));
-    let p = StripeTestProcessor::new(StripeConfig::new("sk_test_abcdefghijkl").unwrap());
-    assert_eq!(
-        p.charge(&req("k", "cus_1", 1234)).await,
-        Err(ProcessorError::NotWired("stripe charge"))
-    );
-    let mut bad = req("k", "cus_1", 1234);
-    bad.currency = "USD".into();
-    assert!(StripeTestProcessor::payment_intent_form(&bad).is_err());
 }

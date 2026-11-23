@@ -4,7 +4,9 @@ use sqlx::postgres::PgPoolOptions;
 use stringcan_api::auth::hash_key;
 use stringcan_api::{router, AppState, MIGRATOR};
 use stringcan_core::FeeModel;
-use stringcan_payments::{FakeProcessor, PaymentProcessor, StripeConfig, StripeTestProcessor};
+use stringcan_payments::{
+    ConnectAccounts, FakeProcessor, PaymentProcessor, ReqwestTransport, StripeConfig, StripeConnect,
+};
 
 fn required(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| panic!("{name} must be set (see .env.example)"))
@@ -24,13 +26,21 @@ async fn main() {
         "STRINGCAN_ADMIN_TOKEN must be at least 24 characters"
     );
 
-    let processor: Arc<dyn PaymentProcessor> = match std::env::var("STRINGCAN_PROCESSOR").as_deref()
+    let stripe_mode = std::env::var("STRINGCAN_PROCESSOR").as_deref() == Ok("stripe_test");
+    let (processor, connect): (Arc<dyn PaymentProcessor>, Arc<dyn ConnectAccounts>) = if stripe_mode
     {
-        Ok("stripe_test") => Arc::new(StripeTestProcessor::new(
-            StripeConfig::from_env().expect("STRIPE_SECRET_KEY must be a test-mode key"),
-        )),
-        _ => Arc::new(FakeProcessor::new(FeeModel::STRIPE_US_CARD)),
+        let key = StripeConfig::from_env().expect("STRIPE_SECRET_KEY must be a test-mode key");
+        let client = Arc::new(StripeConnect::new(
+            ReqwestTransport::new(key).expect("http client"),
+        ));
+        (client.clone(), client)
+    } else {
+        let fake = Arc::new(FakeProcessor::new(FeeModel::STRIPE_US_CARD));
+        (fake.clone(), fake)
     };
+    let webhook_secret = std::env::var("STRIPE_WEBHOOK_SECRET")
+        .ok()
+        .filter(|s| !s.is_empty());
 
     let options = stringcan_api::db::connect_options(
         &required("DATABASE_URL"),
@@ -47,6 +57,9 @@ async fn main() {
     let state = AppState {
         pool,
         processor,
+        connect,
+        webhook_secret,
+        require_connect: stripe_mode,
         admin_hash: hash_key(&admin_token),
         snapshot_every: 200,
     };

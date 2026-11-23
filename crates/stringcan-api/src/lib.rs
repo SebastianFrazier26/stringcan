@@ -2,6 +2,7 @@
 //! validates, persists commands, and talks to the payment processor.
 
 pub mod auth;
+pub mod connect;
 pub mod db;
 pub mod error;
 pub mod routes;
@@ -11,7 +12,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use sqlx::PgPool;
-use stringcan_payments::PaymentProcessor;
+use stringcan_payments::{ConnectAccounts, PaymentProcessor};
 
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!();
 
@@ -19,11 +20,16 @@ pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!();
 pub struct AppState {
     pub pool: PgPool,
     pub processor: Arc<dyn PaymentProcessor>,
+    pub connect: Arc<dyn ConnectAccounts>,
+    /// Signing secret for `/v1/webhooks/stripe`; the endpoint is disabled without it.
+    pub webhook_secret: Option<String>,
+    /// Refuse to charge until the tenant has finished Stripe Connect onboarding.
+    pub require_connect: bool,
     pub admin_hash: [u8; 32],
     /// Write a snapshot every N commands per tenant (0 disables).
     pub snapshot_every: i64,
 }
 
 pub fn router(state: AppState) -> Router {
-    routes::router().with_state(state)
+    routes::router().merge(connect::router()).with_state(state)
 }

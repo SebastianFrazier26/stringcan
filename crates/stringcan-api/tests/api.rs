@@ -1,3 +1,4 @@
+#![allow(clippy::many_single_char_names)]
 //! Postgres-backed tests. They skip cleanly unless `STRINGCAN_TEST_DB=1` and
 //! `DATABASE_URL` point at a disposable database.
 
@@ -22,10 +23,20 @@ async fn app() -> Option<Router> {
 }
 
 async fn app_with_pool() -> Option<(Router, sqlx::PgPool)> {
+    build(false, Some(WEBHOOK_SECRET)).await
+}
+
+const WEBHOOK_SECRET: &str = "whsec_test_secret_for_tests";
+
+async fn build(
+    require_connect: bool,
+    webhook_secret: Option<&str>,
+) -> Option<(Router, sqlx::PgPool)> {
     if std::env::var("STRINGCAN_TEST_DB").as_deref() != Ok("1") {
         eprintln!("skipping: STRINGCAN_TEST_DB is not 1");
         return None;
     }
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let url = std::env::var("DATABASE_URL").expect("DATABASE_URL with STRINGCAN_TEST_DB=1");
     let pool = PgPoolOptions::new()
         .max_connections(5)
@@ -33,9 +44,13 @@ async fn app_with_pool() -> Option<(Router, sqlx::PgPool)> {
         .await
         .unwrap();
     MIGRATOR.run(&pool).await.unwrap();
+    let fake = Arc::new(FakeProcessor::new(FeeModel::STRIPE_US_CARD));
     let app = router(AppState {
         pool: pool.clone(),
-        processor: Arc::new(FakeProcessor::new(FeeModel::STRIPE_US_CARD)),
+        processor: fake.clone(),
+        connect: fake,
+        webhook_secret: webhook_secret.map(str::to_owned),
+        require_connect,
         admin_hash: hash_key(ADMIN),
         snapshot_every: 3,
     });
@@ -387,4 +402,196 @@ async fn snapshots_are_written_used_and_distrusted_when_invalid() {
     assert_eq!(with_snapshot, full_replay);
     assert_eq!(with_bad_snapshot, full_replay);
     assert_eq!(full_replay["entries"].as_array().unwrap().len(), 7);
+}
+
+async fn webhook(app: &Router, body: &str, signature: Option<String>) -> (StatusCode, Value) {
+    let mut req = Request::builder().method("POST").uri("/v1/webhooks/stripe");
+    if let Some(sig) = signature {
+        req = req.header("stripe-signature", sig);
+    }
+    let resp = app
+        .clone()
+        .oneshot(req.body(Body::from(body.to_owned())).unwrap())
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+fn account_updated(event_id: &str, account: &str, charges: bool) -> String {
+    json!({"id": event_id, "type": "account.updated", "account": account,
+           "data": {"object": {"charges_enabled": charges, "payouts_enabled": charges, "details_submitted": true}}})
+    .to_string()
+}
+
+#[tokio::test]
+async fn connect_onboarding_webhook_and_charge_flow() {
+    let Some((app, _)) = build(true, Some(WEBHOOK_SECRET)).await else {
+        return;
+    };
+    let (_, key) = new_tenant(&app, 1000).await;
+    let pay = |r: &str| json!({"external_ref": r});
+
+    let (s, e) = call(&app, "POST", "/v1/payments", Some(&key), Some(pay("alice"))).await;
+    assert_eq!(
+        s,
+        StatusCode::CONFLICT,
+        "no payments before onboarding: {e}"
+    );
+
+    let (s, acct) = call(&app, "POST", "/v1/connect/account", Some(&key), None).await;
+    assert_eq!(s, StatusCode::OK, "{acct}");
+    let account = acct["account_id"].as_str().unwrap().to_owned();
+    let (_, again) = call(&app, "POST", "/v1/connect/account", Some(&key), None).await;
+    assert_eq!(
+        again["account_id"],
+        account.as_str(),
+        "creating twice returns the same account"
+    );
+
+    let link = json!({"refresh_url": "https://app.example/refresh", "return_url": "https://app.example/done"});
+    let (s, l) = call(
+        &app,
+        "POST",
+        "/v1/connect/onboarding-link",
+        Some(&key),
+        Some(link),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(l["url"].as_str().unwrap().contains(&account));
+
+    let (_, st) = call(&app, "GET", "/v1/connect/status", Some(&key), None).await;
+    assert_eq!(st["charges_enabled"], false);
+
+    // Webhook authenticity: wrong secret, tampered body, stale timestamp, missing header.
+    let body = account_updated("evt_flow_1", &account, true);
+    let good = stringcan_payments::sign_header(body.as_bytes(), WEBHOOK_SECRET, now());
+    let forged = stringcan_payments::sign_header(body.as_bytes(), "whsec_wrong", now());
+    let stale = stringcan_payments::sign_header(body.as_bytes(), WEBHOOK_SECRET, now() - 3600);
+    for sig in [Some(forged), Some(stale), None] {
+        assert_eq!(webhook(&app, &body, sig).await.0, StatusCode::UNAUTHORIZED);
+    }
+    assert_eq!(
+        webhook(&app, &body.replace("true", "false"), Some(good.clone()))
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (_, st) = call(&app, "GET", "/v1/connect/status", Some(&key), None).await;
+    assert_eq!(
+        st["charges_enabled"], false,
+        "rejected webhooks change nothing"
+    );
+
+    let (s, v) = webhook(&app, &body, Some(good.clone())).await;
+    assert_eq!((s, v["received"].as_bool()), (StatusCode::OK, Some(true)));
+    let (s, v) = webhook(&app, &body, Some(good)).await;
+    assert_eq!(
+        (s, v["duplicate"].as_bool()),
+        (StatusCode::OK, Some(true)),
+        "Stripe retries are idempotent"
+    );
+    let (_, st) = call(&app, "GET", "/v1/connect/status", Some(&key), None).await;
+    assert_eq!(
+        (
+            st["charges_enabled"].as_bool(),
+            st["details_submitted"].as_bool()
+        ),
+        (Some(true), Some(true))
+    );
+
+    // An event for someone else's account must not touch this tenant.
+    let other = account_updated("evt_flow_2", "acct_someoneelse", false);
+    let sig = stringcan_payments::sign_header(other.as_bytes(), WEBHOOK_SECRET, now());
+    assert_eq!(webhook(&app, &other, Some(sig)).await.0, StatusCode::OK);
+    let (_, st) = call(&app, "GET", "/v1/connect/status", Some(&key), None).await;
+    assert_eq!(st["charges_enabled"], true);
+
+    let (s, _) = call(
+        &app,
+        "PUT",
+        "/v1/subscribers/alice/payment-method",
+        Some(&key),
+        Some(json!({"customer": "cus_Alice123", "payment_method": "pm_Card123"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    for bad in [
+        json!({"customer": "cus_x", "payment_method": "pm_Card123"}),
+        json!({"customer": "cus_Alice123", "payment_method": "card_123"}),
+        json!({"customer": "cus_Alice123", "payment_method": "pm_a/../b"}),
+    ] {
+        let (s, _) = call(
+            &app,
+            "PUT",
+            "/v1/subscribers/alice/payment-method",
+            Some(&key),
+            Some(bad),
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    let (s, paid) = call(&app, "POST", "/v1/payments", Some(&key), Some(pay("alice"))).await;
+    assert_eq!(s, StatusCode::OK, "{paid}");
+
+    // Credit refunds go back against that charge.
+    let (s, _) = call(
+        &app,
+        "POST",
+        "/v1/periods/settle",
+        Some(&key),
+        Some(json!({"actual_cents": 900})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, r) = call(
+        &app,
+        "POST",
+        "/v1/subscribers/alice/refund-credit",
+        Some(&key),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (s, r["refunded_cents"].as_i64()),
+        (StatusCode::OK, Some(100))
+    );
+}
+
+#[tokio::test]
+async fn webhook_endpoint_is_off_without_a_secret_and_tenants_cannot_share_onboarding() {
+    let Some((app, _)) = build(false, None).await else {
+        return;
+    };
+    let body = account_updated("evt_off", "acct_x1234", true);
+    let sig = stringcan_payments::sign_header(body.as_bytes(), WEBHOOK_SECRET, now());
+    assert_eq!(
+        webhook(&app, &body, Some(sig)).await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    let (_, key_a) = new_tenant(&app, 1000).await;
+    let (_, key_b) = new_tenant(&app, 1000).await;
+    let (_, a) = call(&app, "POST", "/v1/connect/account", Some(&key_a), None).await;
+    let (_, b) = call(&app, "POST", "/v1/connect/account", Some(&key_b), None).await;
+    assert_ne!(a["account_id"], b["account_id"]);
+    assert_eq!(
+        call(&app, "POST", "/v1/connect/account", None, None)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
 }

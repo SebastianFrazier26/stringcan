@@ -47,9 +47,10 @@ impl From<ProcessorError> for ApiError {
         match e {
             ProcessorError::Declined(m) => ApiError::PaymentFailed(m),
             ProcessorError::Invalid(m) => ApiError::BadRequest(m.into()),
-            ProcessorError::NotWired(_) | ProcessorError::LiveKeyRefused => {
-                ApiError::ProcessorUnavailable
-            }
+            ProcessorError::Rejected(_)
+            | ProcessorError::Transient(_)
+            | ProcessorError::Protocol(_)
+            | ProcessorError::LiveKeyRefused => ApiError::ProcessorUnavailable,
         }
     }
 }

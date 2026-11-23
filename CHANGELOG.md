@@ -4,6 +4,9 @@ Dated entries, newest first. User-visible and rule changes only.
 
 ## 2026-11-23
 
+- Owner accepted the 16 defaults and chose Stripe Connect with funds held in the owner's own bank account; design doc section 20 covers custody, Standard accounts with direct charges, credits and reserve as ledger-only claims, Plaid vs Financial Connections, and compliance flags for a lawyer.
+- Stripe Connect in test mode behind the processor traits: connected-account creation, onboarding links, direct-charge PaymentIntents with real fees, refunds, signature-verified idempotent webhooks. Fixture-tested; hand-written fixtures, no live calls.
+
 - Postgres TLS via rustls; non-local hosts require `sslmode=verify-full`.
 - Command-log snapshots (every 200 commands) with fallback to full replay; property test for snapshot plus tail.
 - Demo report (`docs/demo/REPORT.md`) generated from the real engine: steady, growth burst, churn shock with the reserve on and off, joiner before and after coverage, fees.

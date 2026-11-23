@@ -13,7 +13,7 @@ Break-even subscription billing: subscribers split an app's upkeep evenly, no ma
 
 - `crates/stringcan-core`: pure engine. No I/O, clock, or randomness; deterministic; all money is `i64` cents. Changing a rule changes replayed history, so bump `RULES_VERSION` in the API crate when engine behaviour changes.
 - `crates/stringcan-sim`: seeded simulator over the engine.
-- `crates/stringcan-payments`: `PaymentProcessor` trait, `FakeProcessor`, Stripe test-mode stub. Never call the network from tests. Never accept a non-`sk_test_` key.
+- `crates/stringcan-payments`: `PaymentProcessor` and `ConnectAccounts` traits, `FakeProcessor`, `StripeConnect<Transport>` (Standard accounts, direct charges, webhooks). Tests use `FixtureTransport`; only `ReqwestTransport` (feature `http`) touches the network. Never accept a non-`sk_test_` key. Never add an application fee or a platform balance (DESIGN section 20).
 - `crates/stringcan-api`: axum + sqlx service; persists engine commands, rebuilds by replay under a tenant row lock.
 
 ## Conventions

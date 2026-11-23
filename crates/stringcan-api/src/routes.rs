@@ -154,6 +154,24 @@ async fn pay(
     // The lock is held across the processor call: simple and correct, at the cost
     // of serialising a tenant's payments. Revisit with a reservation scheme if needed.
     let (fee, processor_ref) = if q.gross_due > 0 {
+        let (account, charges_enabled): (Option<String>, bool) = sqlx::query_as(
+            "SELECT stripe_account_id, stripe_charges_enabled FROM tenants WHERE id = $1",
+        )
+        .bind(tenant)
+        .fetch_one(&mut *tx)
+        .await?;
+        if st.require_connect && !(account.is_some() && charges_enabled) {
+            return Err(ApiError::Conflict(
+                "complete Stripe Connect onboarding before taking payments".into(),
+            ));
+        }
+        let (customer, payment_method): (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT stripe_customer, stripe_payment_method FROM subscribers WHERE tenant_id = $1 AND user_id = $2",
+        )
+        .bind(tenant)
+        .bind(user as i64)
+        .fetch_one(&mut *tx)
+        .await?;
         let res = st
             .processor
             .charge(&ChargeRequest {
@@ -162,6 +180,9 @@ async fn pay(
                 currency: loaded.currency.clone(),
                 customer_ref: body.external_ref.clone(),
                 description: format!("stringcan period {}", q.period),
+                connected_account: account,
+                customer,
+                payment_method,
             })
             .await?;
         (res.fee, Some(res.processor_ref))
@@ -262,12 +283,42 @@ async fn refund_credit(
     let Outcome::Refunded(amount) = loaded.engine.execute(&cmd)? else {
         return Err(ApiError::Internal("unexpected outcome".into()));
     };
+    // A refund goes back to the card, so it must name a charge to refund against
+    // (the subscriber's latest), and cannot exceed that charge.
+    let charge: Option<(String, Option<i64>)> = sqlx::query_as(
+        "SELECT processor_ref, (command->'RecordPayment'->>'gross')::bigint FROM commands
+         WHERE tenant_id = $1 AND processor_ref IS NOT NULL AND command @> $2
+         ORDER BY seq DESC LIMIT 1",
+    )
+    .bind(tenant)
+    .bind(SqlJson(
+        serde_json::json!({ "RecordPayment": { "user": user } }),
+    ))
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((charge_ref, Some(charge_gross))) = charge else {
+        return Err(ApiError::Conflict(
+            "no charge to refund this credit against; settle it with the owner".into(),
+        ));
+    };
+    if amount > charge_gross {
+        return Err(ApiError::Conflict(
+            "credit exceeds the latest charge; refund it manually".into(),
+        ));
+    }
+    let account: Option<String> =
+        sqlx::query_scalar("SELECT stripe_account_id FROM tenants WHERE id = $1")
+            .bind(tenant)
+            .fetch_one(&mut *tx)
+            .await?;
     let refund_ref = st
         .processor
         .refund(&RefundRequest {
             idempotency_key: format!("{tenant}:{user}:refund:{}", loaded.next_seq),
             amount,
             customer_ref: r,
+            connected_account: account,
+            charge_ref: Some(charge_ref),
         })
         .await?;
     store::append(

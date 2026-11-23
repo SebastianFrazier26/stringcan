@@ -1,0 +1,1 @@
+{"error":{"type":"card_error","code":"card_declined","decline_code":"insufficient_funds","message":"Your card has insufficient funds.","payment_intent":{"id":"pi_3TestDeclined","status":"requires_payment_method"}}}
