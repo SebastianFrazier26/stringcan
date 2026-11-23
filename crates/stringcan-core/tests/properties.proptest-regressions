@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 533c55f36ea2a15d8d278af8f0a36f5a8669642e5b87a06ca8d533e436ced974 # shrinks to cfg = Config { fee: FeeModel { bps: 0, fixed: 0 }, reserve_cap_bps: 0, reserve_surcharge_bps: 0 }, first = 0, ops = [Settle(0)]
