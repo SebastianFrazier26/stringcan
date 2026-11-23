@@ -1,0 +1,10 @@
+[package]
+name = "stringcan-core"
+description = "Deterministic break-even pricing and ledger engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
