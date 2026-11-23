@@ -15,6 +15,8 @@ cargo test --workspace
 cargo run -p stringcan-sim -- --seed 7 --periods 12
 ```
 
+Run the whole service locally: put `STRINGCAN_ADMIN_TOKEN=<24+ random chars>` in `.env`, then `docker compose up --build` (API on 127.0.0.1:8080, Postgres alongside).
+
 The simulator drives the real engine with random joins, cancellations and failed payments and prints a per-period break-even table; the engine audits money conservation after every settlement.
 
 ## How the price works, briefly
