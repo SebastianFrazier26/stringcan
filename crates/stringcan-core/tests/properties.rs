@@ -132,6 +132,51 @@ proptest! {
     }
 
     #[test]
+    fn snapshot_plus_tail_equals_full_replay(
+        cfg in config(),
+        first in 0i64..4_000,
+        ops in proptest::collection::vec(op(), 1..80),
+        cut in 0usize..80,
+    ) {
+        let mut e = Engine::new(cfg, first).unwrap();
+        let mut log: Vec<Command> = Vec::new();
+        for o in ops {
+            let cmd = match o {
+                Op::Join(u, jitter) => match e.quote(u) {
+                    Ok(q) => Command::RecordPayment {
+                        user: u,
+                        gross: q.gross_due,
+                        fee: (e.fee_model().fee(q.gross_due) + jitter).min(q.gross_due),
+                    },
+                    Err(_) => continue,
+                },
+                Op::Cancel(u) => Command::Cancel { user: u },
+                Op::Lapse(u) => Command::Lapse { user: u },
+                Op::Settle(a) => Command::Settle { actual: a, evidence: None },
+                Op::SetUpkeep(c) => Command::SetUpkeep { period: e.current_period(), cents: c },
+                Op::Refund(u) => Command::RefundCredit { user: u },
+            };
+            if e.execute(&cmd).is_ok() {
+                log.push(cmd);
+            }
+        }
+
+        let cut = cut.min(log.len());
+        let mut head = Engine::new(cfg, first).unwrap();
+        for c in &log[..cut] {
+            head.execute(c).unwrap();
+        }
+        let json = serde_json::to_string(&head).unwrap();
+        let mut restored: Engine = serde_json::from_str(&json).unwrap();
+        prop_assert_eq!(&restored, &head, "snapshot round trip");
+        prop_assert_eq!(restored.audit(), Ok(()));
+        for c in &log[cut..] {
+            restored.execute(c).unwrap();
+        }
+        prop_assert_eq!(restored, e);
+    }
+
+    #[test]
     fn a_quote_never_rises_when_someone_else_joins(cfg in config(), first in 1i64..4_000, n in 1u64..12) {
         let mut e = Engine::new(cfg, first).unwrap();
         let mut prev: Option<(u32, Cents)> = None;

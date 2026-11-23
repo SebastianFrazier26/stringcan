@@ -209,7 +209,7 @@ pub enum Outcome {
     Refunded(Cents),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Engine {
     cfg: Config,
     periods: BTreeMap<PeriodId, Period>,

@@ -18,6 +18,10 @@ use tower::ServiceExt;
 const ADMIN: &str = "test-admin-token-0123456789abcdef";
 
 async fn app() -> Option<Router> {
+    app_with_pool().await.map(|(r, _)| r)
+}
+
+async fn app_with_pool() -> Option<(Router, sqlx::PgPool)> {
     if std::env::var("STRINGCAN_TEST_DB").as_deref() != Ok("1") {
         eprintln!("skipping: STRINGCAN_TEST_DB is not 1");
         return None;
@@ -29,11 +33,13 @@ async fn app() -> Option<Router> {
         .await
         .unwrap();
     MIGRATOR.run(&pool).await.unwrap();
-    Some(router(AppState {
-        pool,
+    let app = router(AppState {
+        pool: pool.clone(),
         processor: Arc::new(FakeProcessor::new(FeeModel::STRIPE_US_CARD)),
         admin_hash: hash_key(ADMIN),
-    }))
+        snapshot_every: 3,
+    });
+    Some((app, pool))
 }
 
 async fn call(
@@ -335,4 +341,50 @@ async fn concurrent_payers_serialise_per_tenant() {
     .await;
     assert_eq!(ledger["break_even"], true);
     assert_eq!(ledger["entries"].as_array().unwrap().len(), 6);
+}
+
+#[tokio::test]
+async fn snapshots_are_written_used_and_distrusted_when_invalid() {
+    let Some((app, pool)) = app_with_pool().await else {
+        return;
+    };
+    let (tenant, key) = new_tenant(&app, 1000).await;
+    for i in 0..7 {
+        let (s, _) = call(
+            &app,
+            "POST",
+            "/v1/payments",
+            Some(&key),
+            Some(json!({"external_ref": format!("u{i}")})),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+    }
+    let tid: uuid::Uuid = tenant.parse().unwrap();
+    let seqs: Vec<i64> = sqlx::query_scalar("SELECT next_seq FROM snapshots WHERE tenant_id = $1")
+        .bind(tid)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(seqs, vec![6], "every third command, older snapshots pruned");
+
+    let url = format!("/v1/public/{tenant}/ledger");
+    let (_, with_snapshot) = call(&app, "GET", &url, None, None).await;
+
+    sqlx::query("UPDATE snapshots SET state = '{\"garbage\": true}' WHERE tenant_id = $1")
+        .bind(tid)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (_, with_bad_snapshot) = call(&app, "GET", &url, None, None).await;
+    sqlx::query("DELETE FROM snapshots WHERE tenant_id = $1")
+        .bind(tid)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (_, full_replay) = call(&app, "GET", &url, None, None).await;
+
+    assert_eq!(with_snapshot, full_replay);
+    assert_eq!(with_bad_snapshot, full_replay);
+    assert_eq!(full_replay["entries"].as_array().unwrap().len(), 7);
 }

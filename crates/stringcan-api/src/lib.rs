@@ -2,6 +2,7 @@
 //! validates, persists commands, and talks to the payment processor.
 
 pub mod auth;
+pub mod db;
 pub mod error;
 pub mod routes;
 pub mod store;
@@ -19,6 +20,8 @@ pub struct AppState {
     pub pool: PgPool,
     pub processor: Arc<dyn PaymentProcessor>,
     pub admin_hash: [u8; 32],
+    /// Write a snapshot every N commands per tenant (0 disables).
+    pub snapshot_every: i64,
 }
 
 pub fn router(state: AppState) -> Router {

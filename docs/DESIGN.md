@@ -209,13 +209,13 @@ Decided at design time:
 - **Web framework: axum on tokio.** Typed extractors give input validation at the boundary, tower middleware fits auth, and it is the mainstream choice (alternatives: actix-web, similar speed with a different runtime story; poem).
 - **DB layer: sqlx (postgres), parameterised queries, embedded migrations.** No ORM: the data model is small, the engine owns the business logic, and SQL stays visible and reviewable. Queries are plain `sqlx::query` with bound parameters (never string-built). Moving to the compile-checked `query!` macros needs a DB at build time or committed `.sqlx` metadata; deferred (section 18).
 - **Event/command sourcing.** The engine is deterministic, so the API persists accepted *commands* in an append-only table and rebuilds a tenant's engine by replay under the tenant row lock. This makes the ledger auditable and the engine independent of SQL. Costs: replay time grows (add snapshots later), and changing engine rules changes history, so each command row carries `rules_version`, and a rules change must keep old versions replayable. **PROPOSED DEFAULT (owner to confirm).** Alternative: normalised relational tables mirroring engine state (simpler queries, harder to audit).
+- **Snapshots.** Every N commands (default 200) the API stores the serialised engine beside the log. Loading uses the latest snapshot plus the log tail, and ignores a snapshot whose `rules_version` differs, that fails to deserialize, or that fails the engine audit, falling back to a full replay. The log stays the source of truth; a property test checks snapshot plus tail equals full replay.
+- **Postgres TLS.** sqlx is built with rustls. Any non-local database host must use `sslmode=verify-full` or the service refuses to start; `STRINGCAN_ALLOW_INSECURE_DB=1` is an explicit opt-in for a sibling container in compose.
 - **Processor behind a trait** so Stripe is swappable and tests never touch the network.
 
 ## 18. Deferred and open
 
 - Stripe webhooks, SCA / 3-D Secure flows, real PaymentIntents (needs the owner's decision on Connect, section 15).
-- TLS to Postgres (sqlx built without a TLS feature; enable `tls-rustls` before using a managed database over the network).
-- Snapshots for long command logs.
 - Compile-checked SQL (`cargo sqlx prepare` in CI).
 - Chargebacks, per-seat variable cost, annual plans, subscriber tokens and portal, email notices of price changes.
 - Dunning scheduler (the engine exposes lapse; a job triggers it).

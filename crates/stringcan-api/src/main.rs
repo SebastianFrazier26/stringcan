@@ -30,9 +30,14 @@ async fn main() {
         _ => Arc::new(FakeProcessor::new(FeeModel::STRIPE_US_CARD)),
     };
 
+    let options = stringcan_api::db::connect_options(
+        &required("DATABASE_URL"),
+        std::env::var("STRINGCAN_ALLOW_INSECURE_DB").as_deref() == Ok("1"),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
     let pool = PgPoolOptions::new()
         .max_connections(10)
-        .connect(&required("DATABASE_URL"))
+        .connect_with(options)
         .await
         .expect("database connection");
     MIGRATOR.run(&pool).await.expect("migrations");
@@ -41,6 +46,7 @@ async fn main() {
         pool,
         processor,
         admin_hash: hash_key(&admin_token),
+        snapshot_every: 200,
     };
     let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
     let listener = tokio::net::TcpListener::bind(&addr).await.expect("bind");

@@ -181,7 +181,15 @@ async fn pay(
     else {
         return Err(ApiError::Internal("unexpected outcome".into()));
     };
-    store::append(&mut tx, tenant, &mut loaded, &cmd, processor_ref.as_deref()).await?;
+    store::append(
+        &mut tx,
+        tenant,
+        &mut loaded,
+        &cmd,
+        processor_ref.as_deref(),
+        st.snapshot_every,
+    )
+    .await?;
     tx.commit().await?;
     Ok(Json(Paid {
         period,
@@ -213,7 +221,7 @@ async fn status_change(
     let Outcome::StatusChanged(status) = loaded.engine.execute(&cmd)? else {
         return Err(ApiError::Internal("unexpected outcome".into()));
     };
-    store::append(&mut tx, tenant, &mut loaded, &cmd, None).await?;
+    store::append(&mut tx, tenant, &mut loaded, &cmd, None, st.snapshot_every).await?;
     tx.commit().await?;
     Ok(Json(StatusBody { status }))
 }
@@ -262,7 +270,15 @@ async fn refund_credit(
             customer_ref: r,
         })
         .await?;
-    store::append(&mut tx, tenant, &mut loaded, &cmd, Some(&refund_ref)).await?;
+    store::append(
+        &mut tx,
+        tenant,
+        &mut loaded,
+        &cmd,
+        Some(&refund_ref),
+        st.snapshot_every,
+    )
+    .await?;
     tx.commit().await?;
     Ok(Json(Refunded {
         refunded_cents: amount,
@@ -289,7 +305,7 @@ async fn set_upkeep(
         cents: b.cents,
     };
     loaded.engine.execute(&cmd)?;
-    store::append(&mut tx, tenant, &mut loaded, &cmd, None).await?;
+    store::append(&mut tx, tenant, &mut loaded, &cmd, None, st.snapshot_every).await?;
     tx.commit().await?;
     Ok(Json(
         serde_json::json!({ "period": id, "upkeep_cents": b.cents }),
@@ -325,7 +341,7 @@ async fn settle(
         return Err(ApiError::Internal("unexpected outcome".into()));
     };
     loaded.engine.audit()?;
-    store::append(&mut tx, tenant, &mut loaded, &cmd, None).await?;
+    store::append(&mut tx, tenant, &mut loaded, &cmd, None, st.snapshot_every).await?;
     tx.commit().await?;
     Ok(Json(*s))
 }

@@ -55,19 +55,28 @@ async fn load(
         .fetch_optional(&mut **tx)
         .await?
         .ok_or(ApiError::NotFound)?;
-    let mut engine = Engine::new(cfg.0, first)?;
+    let snapshot = load_snapshot_state(tx, tenant).await?;
+    let (mut engine, mut next_seq) = match snapshot {
+        Some(found) => found,
+        None => (Engine::new(cfg.0, first)?, 0),
+    };
 
     let rows: Vec<(i64, i32, Json<Command>)> = sqlx::query_as(
-        "SELECT seq, rules_version, command FROM commands WHERE tenant_id = $1 ORDER BY seq",
+        "SELECT seq, rules_version, command FROM commands WHERE tenant_id = $1 AND seq >= $2 ORDER BY seq",
     )
     .bind(tenant)
+    .bind(next_seq)
     .fetch_all(&mut **tx)
     .await?;
-    let mut next_seq = 0;
     for (seq, version, cmd) in rows {
         if version != RULES_VERSION {
             return Err(ApiError::Internal(format!(
                 "command {seq} has unsupported rules version {version}"
+            )));
+        }
+        if seq != next_seq {
+            return Err(ApiError::Internal(format!(
+                "command log gap: expected {next_seq}, found {seq}"
             )));
         }
         engine
@@ -82,12 +91,39 @@ async fn load(
     })
 }
 
+/// Latest usable snapshot, or None to replay from the start. A bad snapshot is
+/// logged and skipped, never trusted.
+async fn load_snapshot_state(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+) -> Result<Option<(Engine, i64)>, ApiError> {
+    let row: Option<(i64, serde_json::Value)> = sqlx::query_as(
+        "SELECT next_seq, state FROM snapshots WHERE tenant_id = $1 AND rules_version = $2
+         ORDER BY next_seq DESC LIMIT 1",
+    )
+    .bind(tenant)
+    .bind(RULES_VERSION)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((next_seq, state)) = row else {
+        return Ok(None);
+    };
+    match serde_json::from_value::<Engine>(state) {
+        Ok(engine) if engine.audit().is_ok() => Ok(Some((engine, next_seq))),
+        _ => {
+            tracing::warn!(%tenant, next_seq, "ignoring invalid snapshot; replaying full log");
+            Ok(None)
+        }
+    }
+}
+
 pub async fn append(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
     loaded: &mut Loaded,
     cmd: &Command,
     processor_ref: Option<&str>,
+    snapshot_every: i64,
 ) -> Result<(), ApiError> {
     sqlx::query(
         "INSERT INTO commands (tenant_id, seq, rules_version, command, processor_ref) VALUES ($1, $2, $3, $4, $5)",
@@ -100,6 +136,23 @@ pub async fn append(
     .execute(&mut **tx)
     .await?;
     loaded.next_seq += 1;
+    if snapshot_every > 0 && loaded.next_seq % snapshot_every == 0 {
+        sqlx::query(
+            "INSERT INTO snapshots (tenant_id, next_seq, rules_version, state) VALUES ($1, $2, $3, $4)
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(tenant)
+        .bind(loaded.next_seq)
+        .bind(RULES_VERSION)
+        .bind(Json(&loaded.engine))
+        .execute(&mut **tx)
+        .await?;
+        sqlx::query("DELETE FROM snapshots WHERE tenant_id = $1 AND next_seq < $2")
+            .bind(tenant)
+            .bind(loaded.next_seq)
+            .execute(&mut **tx)
+            .await?;
+    }
     Ok(())
 }
 

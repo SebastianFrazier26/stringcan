@@ -6,6 +6,8 @@ An app owner says what it costs to run the app this month. Subscribers split tha
 
 Status: early. The pricing engine, a simulator, and an API scaffold exist; payments run against a fake processor and a Stripe test-mode stub. Do not use with real money. See [`docs/DESIGN.md`](docs/DESIGN.md) for the rules, the open questions, and the legal flags.
 
+See the rules work: [`docs/demo/REPORT.md`](docs/demo/REPORT.md) (steady state, growth, churn shock with and without a reserve, joining before vs after coverage).
+
 ## Try it
 
 ```sh
