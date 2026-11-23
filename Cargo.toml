@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/stringcan-core", "crates/stringcan-sim"]
+members = ["crates/stringcan-core", "crates/stringcan-sim", "crates/stringcan-payments"]
 
 [workspace.package]
 edition = "2021"

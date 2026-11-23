@@ -1,0 +1,18 @@
+[package]
+name = "stringcan-payments"
+description = "Payment processor abstraction with a fake and a Stripe test-mode stub"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+async-trait = "0.1"
+stringcan-core = { path = "../stringcan-core" }
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
+
+[lints]
+workspace = true
