@@ -44,3 +44,12 @@ jobs:
         with:
           tool: cargo-audit
       - run: cargo audit
+
+  image:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t stringcan-api:ci .
+  # Deploy job intentionally absent: the hosting target is the owner's call
+  # (docs/DESIGN.md section 18). It slots in after `image`.

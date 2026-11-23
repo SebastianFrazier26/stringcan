@@ -214,6 +214,7 @@ Decided at design time:
 ## 18. Deferred and open
 
 - Stripe webhooks, SCA / 3-D Secure flows, real PaymentIntents (needs the owner's decision on Connect, section 15).
+- TLS to Postgres (sqlx built without a TLS feature; enable `tls-rustls` before using a managed database over the network).
 - Snapshots for long command logs.
 - Compile-checked SQL (`cargo sqlx prepare` in CI).
 - Chargebacks, per-seat variable cost, annual plans, subscriber tokens and portal, email notices of price changes.

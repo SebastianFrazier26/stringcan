@@ -1,0 +1,30 @@
+[package]
+name = "stringcan-api"
+description = "HTTP API for stringcan on Postgres"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+axum = "0.8.9"
+hex = "0.4.3"
+rand = "0.9.5"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.10.9"
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "json", "migrate", "macros"] }
+stringcan-core = { path = "../stringcan-core" }
+stringcan-payments = { path = "../stringcan-payments" }
+subtle = "2.6.1"
+thiserror = "2.0.21"
+tokio = { version = "1.53.3", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+uuid = { version = "1.20.0", features = ["serde"] }
+[lints]
+workspace = true
+
+[dev-dependencies]
+http-body-util = "0.1.5"
+tower = { version = "0.5.3", features = ["util"] }
