@@ -4,6 +4,11 @@ Dated entries, newest first. User-visible and rule changes only.
 
 ## 2026-11-23
 
+- Owner accepted design section 20 (Stripe Connect custody plan) as written: Standard accounts, direct charges, owner as merchant of record, credits and reserve as ledger-only claims, no application fee. Section 20 status changed from proposed to accepted. The lawyer questions in 20.5 stay open with the owner.
+- Owner approved Plaid (instead of Stripe Financial Connections) for reading the owner's own bank balance to verify the required float.
+- Owner confirmed all 19 rules marked "owner-confirmed 2026-11-23" in the design doc, including the coverage rule, first-period bootstrap and event sourcing.
+- Plaid client in sandbox mode behind a `BankLink` trait: Link token, public-token exchange, real-time balances, item removal, and a pass/fail float check. Fixture-tested with hand-written fixtures; refuses non-sandbox environments; not yet wired into the API.
+
 - Owner accepted the 16 defaults and chose Stripe Connect with funds held in the owner's own bank account; design doc section 20 covers custody, Standard accounts with direct charges, credits and reserve as ledger-only claims, Plaid vs Financial Connections, and compliance flags for a lawyer.
 - Stripe Connect in test mode behind the processor traits: connected-account creation, onboarding links, direct-charge PaymentIntents with real fees, refunds, signature-verified idempotent webhooks. Fixture-tested; hand-written fixtures, no live calls.
 

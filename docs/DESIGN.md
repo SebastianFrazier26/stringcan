@@ -231,7 +231,7 @@ Decided at design time:
 
 ## 20. Custody, Stripe Connect and money flows
 
-Owner decisions, 2026-11-23: use **Stripe Connect**; money is **held in the app owner's own bank account**; Plaid is a "maybe". Everything else in this section is a PROPOSED DEFAULT (owner to confirm) with the alternative stated. Nothing here is legal advice (section 20.5).
+Status: **ACCEPTED** (owner, 2026-11-23). Owner decisions, 2026-11-23: use **Stripe Connect**; money is **held in the app owner's own bank account**; the plan below (Standard accounts, direct charges, owner as merchant of record, credits and reserve as ledger-only claims, no application fee) is approved as written; **Plaid is approved** for reading the owner's bank account (20.4). The compliance questions in 20.5 remain **open** with the owner and are not decided here. Rules still marked PROPOSED DEFAULT inside this section (20.3 float publication and credit-refund limit, 20.4 balance rule) await the owner. Nothing here is legal advice (section 20.5).
 
 ### 20.1 Shape
 
@@ -282,7 +282,16 @@ Two different jobs are bundled under "maybe Plaid":
    - For (a), **Stripe Financial Connections** (Stripe's own account-linking product, built on the same Connect relationship) can read a linked bank account's balance with the owner's consent. Plaid does the same job as a separate integration.
    - For (b), neither verifies a bill. Plaid Transactions could match outgoing payments to known hosting vendors (a partial, privacy-heavy signal). Invoice upload or cloud-provider billing APIs prove upkeep more directly.
 
-PROPOSED DEFAULT (owner to confirm), recommendation:
+**Decision, 2026-11-23: the owner approved Plaid** for job 2(a), reading the balance of the owner's own bank account, over Stripe Financial Connections. The original recommendation is kept below for the record; where it says Financial Connections for the verified-float badge, read Plaid.
+
+Implemented (this branch, sandbox only): `stringcan-payments::plaid`, a `BankLink` trait (create a Link token, exchange the public token, read real-time balances via `/accounts/balance/get`, revoke via `/item/remove`) over a `JsonTransport` seam, plus `verify_float`, which returns only Verified / Short / Unverifiable, never amounts.
+
+- Security posture: sandbox only (`PLAID_ENV` must be `sandbox`, and the live transport is hard-wired to `sandbox.plaid.com`); credentials sent as `PLAID-CLIENT-ID` / `PLAID-SECRET` headers by the transport, so request bodies and fixtures never contain them; config and access token redact in `Debug` and the token has no `Display`; Plaid's free-text error messages are dropped, only `error_type` / `error_code` are kept; `client_user_id` must be an opaque ref (no email or name).
+- The Plaid **access token is a credential, not an opaque id** (it grants ongoing read access to the owner's bank data), so the "store only opaque ids" rule in 20.5 cannot cover it as is. Where it is stored is an open owner question (below); the API is not wired until that is answered.
+- PROPOSED DEFAULT (owner to confirm): an account counts its `available` balance, falling back to `current` only when the bank reports no `available`; only depository accounts count (credit, loan and investment never do); a missing balance or a currency other than the tenant's makes the check Unverifiable rather than guessed. Alternative: count `min(available, current)`, or `current` only (higher, includes pending debits not yet cleared).
+- Open (owner): which Link product to initialise (Plaid does not accept `balance` as a product; balance comes with another one, e.g. `auth` or `transactions`); where the access token lives; which linked accounts count toward the float; how often to re-check; how to handle Plaid webhooks (they are JWT-signed and not yet verified here).
+
+Original recommendation (superseded on the Plaid-vs-Financial-Connections point):
 
 - v0 (now): no Plaid and no Financial Connections. Publish the required float; publish upkeep evidence references (already supported).
 - v1: add **Stripe Financial Connections** as an opt-in "verified float" badge: the owner links the bank account that receives payouts and stringcan periodically reads the balance, publishing only a pass/fail against the required float, never account details.
@@ -309,3 +318,4 @@ Which choices help avoid stringcan being treated as a money transmitter or payme
 - `stringcan-payments`: `Transport` trait (HTTP boundary); `StripeConnect<T>` implementing `PaymentProcessor` and the new `ConnectAccounts` trait (create Standard account, Account Link, account status); direct-charge PaymentIntents with `Stripe-Account` and `Idempotency-Key` headers and an expanded balance transaction so the real fee is recorded; refunds; webhook signature verification (`Stripe-Signature`, HMAC-SHA256 over `timestamp.payload`, constant-time compare, 5 minute tolerance) and typed event parsing. A `FixtureTransport` serves canned responses in tests; a `ReqwestTransport` is the only code that touches the network and is never used by tests.
 - `stringcan-api`: `POST /v1/connect/account`, `POST /v1/connect/onboarding-link`, `GET /v1/connect/status`, `PUT /v1/subscribers/{ref}/payment-method`, and `POST /v1/webhooks/stripe` (signature-verified, event-id idempotent, handles `account.updated`, records the rest). Payments for a Connect tenant are refused until `charges_enabled`.
 - Test fixtures are **hand-written to Stripe's documented shapes**, not recorded from live traffic, because no test key was available. Replace them with recorded test-mode responses once the owner provides a Stripe test account (and re-run the tests).
+- Plaid (sandbox, fixture-tested, not wired into the API): see 20.4. Fixtures are hand-written to Plaid's documented sandbox shapes; replace with recorded sandbox responses once the owner provides sandbox keys.
