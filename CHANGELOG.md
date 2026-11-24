@@ -2,10 +2,14 @@
 
 Dated entries, newest first. User-visible and rule changes only.
 
+## 2026-11-24
+
+- Owner set the rules v3 absolute credit ceiling to $500 (`credit_cap_ceiling = 50_000` cents), replacing the proposed $1,000. The credit cap floor must stay at or below the ceiling. Tenants keep the ceiling they were created with.
+
 ## 2026-11-23
 
 - Owner approved every recommendation and proposed default in the design doc ("all recommendations fly"). Adopted: P1 (agent-of-payee owner terms), P2 (never act for subscribers), P7 (the reserve is an owner liability to the pool), P8 (EU position: never in possession of funds), float publication, the balance-counting rule, a daily plus on-demand float re-check, Plaid webhooks that only mark the status unverifiable, payout-account verification, a dormant sweep after 3 periods, the last 6 charges as refund targets, and consent when no renewal cap is on file. Design doc 20.10 lists them. Still open: the donations recipient, credit that no remembered charge can absorb, California's 30-day notice upper bound, and the lawyer review.
-- Rules v3 for new tenants (v1 and v2 tenants replay unchanged): no subscriber's credit is held above an absolute ceiling, `credit_cap_ceiling`, which defaults to $1,000 (a proposed default) and may not exceed FinCEN's $2,000 closed-loop limit. Any excess is refunded to the subscriber's own charges at settlement.
+- Rules v3 for new tenants (v1 and v2 tenants replay unchanged): no subscriber's credit is held above an absolute ceiling, `credit_cap_ceiling`, proposed at $1,000 (set to $500 on 2026-11-24), which may not exceed FinCEN's $2,000 closed-loop limit. Any excess is refunded to the subscriber's own charges at settlement.
 - Renewals are now refused until their price notice is at least 10 days old. The API records when each notice went out.
 - Linking a bank account now checks that it is the Stripe payout account by routing number and last four. A mismatch is refused. When the check is not possible, the account is marked `owner_declared`, and the public ledger shows `float_check.payout_account`. No account numbers are stored.
 - `POST /v1/admin/bank/recheck` (admin only) re-checks the float of every bank link not checked in the last 20 hours, for a daily cron.

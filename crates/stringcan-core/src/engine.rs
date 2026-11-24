@@ -37,8 +37,9 @@ fn default_credit_cap_floor() -> Cents {
 fn default_dormant_after() -> u32 {
     3
 }
+/// Owner decision 2026-11-24: $500.
 fn default_credit_cap_ceiling() -> Cents {
-    100_000
+    50_000
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

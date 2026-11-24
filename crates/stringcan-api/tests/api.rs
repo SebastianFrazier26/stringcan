@@ -1146,7 +1146,7 @@ async fn new_tenants_get_rules_v3_with_the_absolute_credit_ceiling() {
         .await
         .unwrap();
     assert_eq!(cfg["rules_version"], 3);
-    assert_eq!(cfg["credit_cap_ceiling"], 100_000);
+    assert_eq!(cfg["credit_cap_ceiling"], 50_000);
 }
 
 fn auth_numbers(account: &str, number: &str, routing: &str) -> stringcan_payments::JsonResponse {

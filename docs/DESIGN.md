@@ -377,7 +377,7 @@ Researched 2026-11-23. This is an engineer's reading of public sources, **not le
 - **ADOPTED 2026-11-23 (owner approved)**: the engine remembers a subscriber's last **6** charges as refund targets, since card refunds get harder as charges age (Stripe's exact refund window was not checked). Alternative: remember all charges.
 - Known gap, **still open** (no recommendation was made, only a possible fix): credit above the cap, or dormant credit, that no remembered charge can absorb stays as credit and is flagged by nothing yet. Possible fix: list such balances for the owner to settle by hand.
 - Note: with a large share, two shares can exceed FinCEN's $2,000 closed-loop line (20.7). **Fixed 2026-11-23 (owner approved), rules v3:** new tenants are v3 (v1 and v2 tenants replay unchanged). In v3 the cap is `min(credit_cap_ceiling, max(credit_cap_floor, 2 * last settled share))`. `credit_cap_ceiling` must lie between the floor and $2,000 (200,000 cents) or the config is refused.
-- PROPOSED DEFAULT (owner to confirm; agent pick 2026-11-23, since the approval named a limit but not a value): `credit_cap_ceiling = 100,000` cents ($1,000). It leaves headroom under the $2,000 line, which FinCEN counts per device per day, and it equals the open-loop limit. Alternative: $1,999 (the most the approval allows) or $500.
+- **Owner decided 2026-11-24: `credit_cap_ceiling = 50,000` cents ($500).** This replaces the agent's proposed $1,000 default from 2026-11-23. The ceiling may not be below `credit_cap_floor`, so the floor must also be at most $500 (the default floor is $100). The $2,000 hard upper bound in validation is unchanged. Tenants keep the config they were created with, so a tenant created on this branch before 2026-11-24 keeps $1,000.
 - Still true in v3: credit is issued only at settlement and the cap is applied in the same command, so between commands no subscriber with a refundable charge holds credit above the ceiling. The known gap above (credit no remembered charge can absorb) also applies to the ceiling.
 
 ### 20.8 Variable monthly prices: notice and consent (research; owner decided N3, 2026-11-23)
@@ -449,7 +449,7 @@ The owner read this document and said "design doc looks good, all recommendation
 | Dormant sweep | after 3 periods | 20.7 | already (rules v2) |
 | Refund targets | last 6 charges | 20.7 | already (rules v2) |
 | Consent when no cap on file | required | 20.8 | already (rules v2) |
-| Absolute credit cap | at or below $2,000 | 20.7 | yes, rules v3 (value $1,000 is a new proposed default) |
+| Absolute credit cap | at or below $2,000; owner set $500 on 2026-11-24 | 20.7 | yes, rules v3 |
 | 10-day lead | enforced | 20.8 | yes, API-side |
 
 Still open (no recommendation was made):
@@ -457,5 +457,4 @@ Still open (no recommendation was made):
 - Donations recipient: an individual or a fiscal host (20.9).
 - Credit that no remembered charge can absorb (20.7 known gap; a possible fix is listed, not recommended).
 - California's 30-day upper bound on notice age (20.8).
-- New, from this round: the value of `credit_cap_ceiling` ($1,000 proposed, 20.7).
 - Lawyer review of everything in 15 and 20.5 before live mode, including the `docs/legal/` drafts; recorded Stripe and Plaid fixtures; whether Stripe exposes a Standard account's external accounts to the platform (20.4).

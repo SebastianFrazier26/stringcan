@@ -30,11 +30,13 @@ fn zero_fee(cfg: Config) -> Config {
 }
 
 #[test]
-fn new_tenants_get_v3_with_a_thousand_dollar_ceiling() {
+fn new_tenants_get_v3_with_a_five_hundred_dollar_ceiling() {
     let c = Config::default();
     assert_eq!(c.rules_version, CURRENT_RULES);
     assert_eq!(CURRENT_RULES, 3);
-    assert_eq!(c.credit_cap_ceiling, 100_000);
+    assert_eq!(c.credit_cap_ceiling, 50_000);
+    assert!(c.credit_cap_floor <= c.credit_cap_ceiling);
+    c.validate().unwrap();
     assert!(c.credit_cap_ceiling <= CLOSED_LOOP_LIMIT);
 }
 
@@ -49,9 +51,9 @@ fn credit_never_stays_above_the_ceiling_even_when_two_shares_exceed_it() {
     let legs: Vec<_> = s.refunds.iter().filter(|l| l.user == 2).collect();
     assert_eq!(legs.len(), 1);
     assert_eq!(legs[0].reason, RefundReason::OverCap);
-    assert_eq!(legs[0].amount, rec.credit_issued - 100_000);
-    assert_eq!(credit(&e, 2), 100_000);
-    assert!(e.subscribers().all(|(_, s)| s.credit <= 100_000));
+    assert_eq!(legs[0].amount, rec.credit_issued - 50_000);
+    assert_eq!(credit(&e, 2), 50_000);
+    assert!(e.subscribers().all(|(_, s)| s.credit <= 50_000));
     e.audit().unwrap();
 }
 
@@ -76,6 +78,17 @@ fn the_ceiling_must_sit_between_the_floor_and_the_closed_loop_limit() {
         ..Config::default()
     };
     assert!(below_floor.validate().is_err());
+    // The floor may not rise above the $500 default ceiling unless the ceiling rises too.
+    let floor_above_ceiling = Config {
+        credit_cap_floor: 50_001,
+        ..Config::default()
+    };
+    assert!(floor_above_ceiling.validate().is_err());
+    let floor_at_ceiling = Config {
+        credit_cap_floor: 50_000,
+        ..Config::default()
+    };
+    floor_at_ceiling.validate().unwrap();
     let at_limit = Config {
         credit_cap_ceiling: CLOSED_LOOP_LIMIT,
         ..Config::default()
