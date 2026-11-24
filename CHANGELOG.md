@@ -4,6 +4,11 @@ Dated entries, newest first. User-visible and rule changes only.
 
 ## 2026-11-23
 
+- Owner positions recorded on the six lawyer questions (design 20.5), dated 2026-11-23 and marked as owner positions, not legal advice; the lawyer review before live mode stays required. Positions: stringcan acts as the owner's payment agent; credits are prepaid balances redeemable for cash; the reserve should not create trust or segregation duties; variable-price notice and consent open pending research; tax confirmed on the owner as merchant of record with Stripe Tax on top of the share; stringcan is free and funded by donations, no application fee.
+- Design 20.7: consequences of those positions (FinCEN exclusions and prepaid-access limits, MTMA agent-of-payee exemption, PSD2 commercial-agent and technical-provider exclusions, EU e-money) and eight proposed design changes for the owner, none adopted.
+- Design 20.8: research on notice and consent for variable monthly prices (EU unfair-terms law and withdrawal button, Digital Fairness Act proposal, California auto-renewal law after AB 2863, FTC rule status), four options and a recommendation, awaiting the owner.
+- Design 20.9: donation options that keep "no cut" true, as an owner question.
+
 - Owner accepted design section 20 (Stripe Connect custody plan) as written: Standard accounts, direct charges, owner as merchant of record, credits and reserve as ledger-only claims, no application fee. Section 20 status changed from proposed to accepted. The lawyer questions in 20.5 stay open with the owner.
 - Owner approved Plaid (instead of Stripe Financial Connections) for reading the owner's own bank balance to verify the required float.
 - Owner confirmed all 19 rules marked "owner-confirmed 2026-11-23" in the design doc, including the coverage rule, first-period bootstrap and event sourcing.
