@@ -229,3 +229,113 @@ fn events_parse_with_their_connected_account() {
         WebhookError::MalformedPayload
     );
 }
+
+const EXTERNAL: &str = include_str!("fixtures/external_accounts.json");
+const EXTERNAL_FORBIDDEN: &str = include_str!("fixtures/external_accounts_forbidden.json");
+
+#[tokio::test]
+async fn payout_banks_list_the_connected_accounts_bank_accounts() {
+    let t = std::sync::Arc::new(FixtureTransport::new([FixtureTransport::ok(EXTERNAL)]));
+    let c = StripeConnect::new(t.clone());
+    let banks = c.payout_banks("acct_1TestOwner").await.unwrap();
+    assert_eq!(banks.len(), 2);
+    assert!(banks[1].default_for_currency);
+    assert_eq!(
+        (banks[1].routing_number.as_str(), banks[1].last4.as_str()),
+        ("011401533", "0000")
+    );
+    let sent = &t.requests()[0];
+    assert_eq!(sent.method, Method::Get);
+    assert!(sent
+        .path
+        .starts_with("/v1/accounts/acct_1TestOwner/external_accounts?object=bank_account"));
+    assert!(c.payout_banks("not-an-account").await.is_err());
+}
+
+#[tokio::test]
+async fn a_refused_external_account_listing_is_a_rejection_not_a_mismatch() {
+    let c = StripeConnect::new(FixtureTransport::new([FixtureTransport::status(
+        403,
+        EXTERNAL_FORBIDDEN,
+    )]));
+    assert!(matches!(
+        c.payout_banks("acct_1TestOwner").await,
+        Err(ProcessorError::Rejected(_))
+    ));
+}
+
+mod payout_match {
+    use stringcan_payments::{match_payout_account, AchNumbers, PayoutBank, PayoutMatch};
+
+    fn bank(routing: &str, last4: &str, currency: &str, default: bool) -> PayoutBank {
+        PayoutBank {
+            routing_number: routing.into(),
+            last4: last4.into(),
+            currency: currency.into(),
+            default_for_currency: default,
+        }
+    }
+
+    fn plaid(tokenized: bool) -> AchNumbers {
+        AchNumbers {
+            account_id: "acc".into(),
+            routing: "011401533".into(),
+            last4: "0000".into(),
+            tokenized,
+        }
+    }
+
+    #[test]
+    fn matches_the_default_payout_account_in_the_tenant_currency() {
+        let banks = [
+            bank("011401533", "0000", "usd", true),
+            bank("110000000", "6789", "usd", false),
+        ];
+        assert_eq!(
+            match_payout_account(Some(&plaid(false)), &banks, "usd"),
+            PayoutMatch::Matched
+        );
+    }
+
+    #[test]
+    fn a_non_default_account_does_not_count_when_a_default_exists() {
+        let banks = [
+            bank("110000000", "6789", "usd", true),
+            bank("011401533", "0000", "usd", false),
+        ];
+        assert_eq!(
+            match_payout_account(Some(&plaid(false)), &banks, "usd"),
+            PayoutMatch::Mismatch
+        );
+    }
+
+    #[test]
+    fn without_a_flagged_default_any_account_in_the_currency_counts() {
+        let banks = [bank("011401533", "0000", "usd", false)];
+        assert_eq!(
+            match_payout_account(Some(&plaid(false)), &banks, "usd"),
+            PayoutMatch::Matched
+        );
+    }
+
+    #[test]
+    fn unknowable_cases_are_unknown_not_mismatch() {
+        let banks = [bank("011401533", "0000", "usd", true)];
+        assert!(matches!(
+            match_payout_account(Some(&plaid(true)), &banks, "usd"),
+            PayoutMatch::Unknown(_)
+        ));
+        assert!(matches!(
+            match_payout_account(None, &banks, "usd"),
+            PayoutMatch::Unknown(_)
+        ));
+        assert!(matches!(
+            match_payout_account(Some(&plaid(false)), &banks, "eur"),
+            PayoutMatch::Unknown(_)
+        ));
+        assert!(matches!(
+            match_payout_account(Some(&plaid(false)), &[], "usd"),
+            PayoutMatch::Unknown(_)
+        ));
+    }
+}

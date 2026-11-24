@@ -5,8 +5,8 @@ use async_trait::async_trait;
 use stringcan_core::FeeModel;
 
 use crate::{
-    AccountStatus, ChargeRequest, ChargeResult, ConnectAccounts, PaymentProcessor, ProcessorError,
-    RefundRequest,
+    AccountStatus, ChargeRequest, ChargeResult, ConnectAccounts, PaymentProcessor, PayoutBank,
+    ProcessorError, RefundRequest,
 };
 
 /// Deterministic in-memory processor and Connect provider. Customers whose ref
@@ -22,6 +22,7 @@ struct State {
     refunds: HashMap<String, String>,
     accounts: HashMap<String, String>,
     statuses: HashMap<String, AccountStatus>,
+    payout_banks: HashMap<String, Vec<PayoutBank>>,
     charge_calls: usize,
 }
 
@@ -52,6 +53,15 @@ impl FakeProcessor {
             .expect("fake processor lock")
             .statuses
             .insert(account.to_owned(), status);
+    }
+
+    /// An account without banks set here reports none.
+    pub fn set_payout_banks(&self, account: &str, banks: Vec<PayoutBank>) {
+        self.state
+            .lock()
+            .expect("fake processor lock")
+            .payout_banks
+            .insert(account.to_owned(), banks);
     }
 }
 
@@ -131,6 +141,17 @@ impl ConnectAccounts for FakeProcessor {
             .statuses
             .get(account)
             .copied()
+            .unwrap_or_default())
+    }
+
+    async fn payout_banks(&self, account: &str) -> Result<Vec<PayoutBank>, ProcessorError> {
+        Ok(self
+            .state
+            .lock()
+            .expect("fake processor lock")
+            .payout_banks
+            .get(account)
+            .cloned()
             .unwrap_or_default())
     }
 }

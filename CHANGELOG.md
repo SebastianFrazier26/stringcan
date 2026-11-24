@@ -4,6 +4,13 @@ Dated entries, newest first. User-visible and rule changes only.
 
 ## 2026-11-23
 
+- Owner approved every recommendation and proposed default in the design doc ("all recommendations fly"). Adopted: P1 (agent-of-payee owner terms), P2 (never act for subscribers), P7 (the reserve is an owner liability to the pool), P8 (EU position: never in possession of funds), float publication, the balance-counting rule, a daily plus on-demand float re-check, Plaid webhooks that only mark the status unverifiable, payout-account verification, a dormant sweep after 3 periods, the last 6 charges as refund targets, and consent when no renewal cap is on file. Design doc 20.10 lists them. Still open: the donations recipient, credit that no remembered charge can absorb, California's 30-day notice upper bound, and the lawyer review.
+- Rules v3 for new tenants (v1 and v2 tenants replay unchanged): no subscriber's credit is held above an absolute ceiling, `credit_cap_ceiling`, which defaults to $1,000 (a proposed default) and may not exceed FinCEN's $2,000 closed-loop limit. Any excess is refunded to the subscriber's own charges at settlement.
+- Renewals are now refused until their price notice is at least 10 days old. The API records when each notice went out.
+- Linking a bank account now checks that it is the Stripe payout account by routing number and last four. A mismatch is refused. When the check is not possible, the account is marked `owner_declared`, and the public ledger shows `float_check.payout_account`. No account numbers are stored.
+- `POST /v1/admin/bank/recheck` (admin only) re-checks the float of every bank link not checked in the last 20 hours, for a daily cron.
+- `docs/legal/`: draft owner agreement (agent of the payee) and the no-subscriber-agency rule, both marked as drafts for lawyer review, not legal advice.
+
 - Owner adopted credit safeguards P3 to P6 and price-notice option N3 with a 10-day notice; recorded donations as GitHub Sponsors now and stringcan-as-its-own-tenant later (recipient still open). P1, P2, P7 and P8 remain proposed.
 - Rules v2 for new tenants (existing tenants keep v1 and replay unchanged): renewals need a logged price notice and the subscriber's consented cap, and are charged at most the noticed ceiling, with any gap carried as a shortfall; credit is refunded only to the subscriber's own recent charges, capped per subscriber at the larger of $100 or two shares (the excess refunded at settlement), never moved between subscribers, and swept back to the card after 3 dormant periods.
 - API: `POST /v1/periods/{id}/notices` (notifications job; logs only, no email yet) and `PUT /v1/subscribers/{ref}/renewal-cap`; settlement and credit refunds now issue one processor refund per charge.

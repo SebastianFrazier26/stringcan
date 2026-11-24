@@ -196,3 +196,37 @@ fn overdrawn_account_counts_against_the_float() {
     assert_eq!(verify_float(&b, 3_000, "usd"), FloatCheck::Verified);
     assert_eq!(verify_float(&b, 3_001, "usd"), FloatCheck::Short);
 }
+
+const AUTH: &str = include_str!("fixtures/plaid_auth.json");
+const AUTH_TOKENIZED: &str = include_str!("fixtures/plaid_auth_tokenized.json");
+
+#[tokio::test]
+async fn ach_numbers_keep_only_routing_and_last_four() {
+    let (p, t) = plaid(vec![JsonFixtureTransport::ok(AUTH)]);
+    let acct = "BxBXxLj1m4HMXBm9WZZmCWVbPjX16EHwv99vp".to_owned();
+    let nums = p
+        .ach_numbers(&token(), std::slice::from_ref(&acct))
+        .await
+        .unwrap();
+    assert_eq!(nums.len(), 1);
+    assert_eq!(
+        (
+            nums[0].routing.as_str(),
+            nums[0].last4.as_str(),
+            nums[0].tokenized
+        ),
+        ("011401533", "0000", false)
+    );
+    let dbg = format!("{nums:?}");
+    assert!(!dbg.contains("1111222233330000") && !dbg.contains("011401533"));
+    let sent = &t.requests()[0];
+    assert_eq!(sent.path, "/auth/get");
+    assert_eq!(sent.body["options"]["account_ids"], json!([acct]));
+}
+
+#[tokio::test]
+async fn tokenized_account_numbers_are_flagged() {
+    let (p, _) = plaid(vec![JsonFixtureTransport::ok(AUTH_TOKENIZED)]);
+    let nums = p.ach_numbers(&token(), &[]).await.unwrap();
+    assert!(nums[0].tokenized);
+}

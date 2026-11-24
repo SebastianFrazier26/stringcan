@@ -1,0 +1,4 @@
+{"object":"list","url":"/v1/accounts/acct_1TestOwner/external_accounts","has_more":false,"data":[
+{"id":"ba_1TestOld","object":"bank_account","account":"acct_1TestOwner","bank_name":"STRIPE TEST BANK","country":"US","currency":"usd","default_for_currency":false,"last4":"6789","routing_number":"110000000","status":"new"},
+{"id":"ba_1TestPayout","object":"bank_account","account":"acct_1TestOwner","bank_name":"PLAID TEST BANK","country":"US","currency":"usd","default_for_currency":true,"last4":"0000","routing_number":"011401533","status":"verified"}
+]}

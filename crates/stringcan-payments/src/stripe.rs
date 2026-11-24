@@ -5,8 +5,8 @@ use serde_json::Value;
 
 use crate::transport::{HttpRequest, HttpResponse, Method, Transport};
 use crate::{
-    AccountStatus, ChargeRequest, ChargeResult, ConnectAccounts, PaymentProcessor, ProcessorError,
-    RefundRequest,
+    AccountStatus, ChargeRequest, ChargeResult, ConnectAccounts, PaymentProcessor, PayoutBank,
+    ProcessorError, RefundRequest,
 };
 
 /// Holds a Stripe secret key. Construction refuses anything but a test-mode key,
@@ -184,6 +184,43 @@ impl<T: Transport> ConnectAccounts for StripeConnect<T> {
             payouts_enabled: flag("payouts_enabled"),
             details_submitted: flag("details_submitted"),
         })
+    }
+
+    /// Not checked against live Stripe: whether a platform may list a Standard
+    /// account's external accounts is unverified. A refusal surfaces as
+    /// `Rejected`, which the API treats as "cannot verify", not as a mismatch.
+    async fn payout_banks(&self, account: &str) -> Result<Vec<PayoutBank>, ProcessorError> {
+        if !valid_id(account, "acct_") {
+            return Err(ProcessorError::Invalid("bad account id"));
+        }
+        let v = self
+            .call(HttpRequest {
+                method: Method::Get,
+                path: format!(
+                    "/v1/accounts/{account}/external_accounts?object=bank_account&limit=20"
+                ),
+                form: vec![],
+                headers: vec![],
+            })
+            .await?;
+        let data = v
+            .get("data")
+            .and_then(Value::as_array)
+            .ok_or(ProcessorError::Protocol("missing data"))?;
+        data.iter()
+            .filter(|b| b.get("object").and_then(Value::as_str) == Some("bank_account"))
+            .map(|b| {
+                Ok(PayoutBank {
+                    routing_number: str_field(b, "routing_number")?,
+                    last4: str_field(b, "last4")?,
+                    currency: str_field(b, "currency")?.to_ascii_lowercase(),
+                    default_for_currency: b
+                        .get("default_for_currency")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                })
+            })
+            .collect()
     }
 }
 

@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::auth::{generate_api_key, hash_key, Admin, Owner};
 use crate::error::ApiError;
-use crate::notify::{PriceNotice, NOTICE_LEAD_DAYS};
+use crate::notify::{self, PriceNotice, NOTICE_LEAD_DAYS};
 use crate::{store, AppState};
 
 pub fn router() -> Router<AppState> {
@@ -164,6 +164,16 @@ async fn pay(
             return Err(EngineError::ConsentRequired.into())
         }
         None => {}
+    }
+    if q.ceiling.is_some() {
+        let wait = notify::lead_wait(&mut tx, tenant, user, q.period, NOTICE_LEAD_DAYS).await?;
+        if let Some(ready_at) = wait {
+            return Err(ApiError::Conflict(format!(
+                "the price notice for period {} is less than {NOTICE_LEAD_DAYS} days old; \
+                 the renewal can be charged from unix time {ready_at}",
+                q.period
+            )));
+        }
     }
 
     // The lock is held across the processor call: simple and correct, at the cost
@@ -457,7 +467,7 @@ struct NoticesBody {
 }
 
 /// The notifications job: call it `NOTICE_LEAD_DAYS` before the period's billing
-/// date (no scheduler yet). Notices are delivered before the command commits, so
+/// date (no scheduler yet); renewals are refused until their notice is that old. Notices are delivered before the command commits, so
 /// a delivery failure records nothing and a rerun notices everyone again.
 async fn issue_notices(
     Owner(tenant): Owner,
@@ -487,6 +497,8 @@ async fn issue_notices(
     }
     if !notices.is_empty() {
         store::append(&mut tx, tenant, &mut loaded, &cmd, None, st.snapshot_every).await?;
+        let users: Vec<_> = notices.iter().map(|n| n.user).collect();
+        notify::record_issued(&mut tx, tenant, id, &users).await?;
     }
     tx.commit().await?;
     Ok(Json(NoticesBody {

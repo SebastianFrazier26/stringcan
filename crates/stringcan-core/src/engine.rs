@@ -13,13 +13,19 @@ pub type PeriodId = u32;
 /// command log always replays under the rules it was written with.
 /// v1: original rules. v2 (2026-11-23): credit safeguards (refund only to the
 /// card that paid, per-subscriber cap, dormant sweep) and noticed price ceilings
-/// with a subscriber renewal cap (DESIGN 20.7, 20.8).
+/// with a subscriber renewal cap (DESIGN 20.7, 20.8). v3 (2026-11-23): an
+/// absolute per-subscriber credit ceiling under the US closed-loop limit.
 pub const RULES_V1: u32 = 1;
-pub const CURRENT_RULES: u32 = 2;
+pub const RULES_V2: u32 = 2;
+pub const CURRENT_RULES: u32 = 3;
 
-/// Charges remembered per subscriber as refund targets. PROPOSED DEFAULT: about
-/// six monthly charges, since card refunds get harder with age; older charges
-/// stop being refund targets.
+/// The US closed-loop prepaid-access threshold, $2,000 (31 CFR
+/// 1010.100(ff)(4)(iii)(A)); a v3 credit ceiling may not exceed it.
+pub const CLOSED_LOOP_LIMIT: Cents = 200_000;
+
+/// Charges remembered per subscriber as refund targets. Owner-approved
+/// 2026-11-23: six, about six monthly charges, since card refunds get harder
+/// with age; older charges stop being refund targets.
 pub const MAX_REMEMBERED_CHARGES: usize = 6;
 
 fn rules_v1() -> u32 {
@@ -30,6 +36,9 @@ fn default_credit_cap_floor() -> Cents {
 }
 fn default_dormant_after() -> u32 {
     3
+}
+fn default_credit_cap_ceiling() -> Cents {
+    100_000
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +58,9 @@ pub struct Config {
     /// this many periods have passed since the last period they paid for.
     #[serde(default = "default_dormant_after")]
     pub dormant_after_periods: u32,
+    /// v3: no subscriber's credit is held above this, whatever their share.
+    #[serde(default = "default_credit_cap_ceiling")]
+    pub credit_cap_ceiling: Cents,
 }
 
 impl Default for Config {
@@ -60,6 +72,7 @@ impl Default for Config {
             rules_version: CURRENT_RULES,
             credit_cap_floor: default_credit_cap_floor(),
             dormant_after_periods: default_dormant_after(),
+            credit_cap_ceiling: default_credit_cap_ceiling(),
         }
     }
 }
@@ -69,6 +82,14 @@ impl Config {
     pub fn v1() -> Self {
         Config {
             rules_version: RULES_V1,
+            ..Config::default()
+        }
+    }
+
+    /// Rules v2, kept so v2 tenants replay unchanged.
+    pub fn v2() -> Self {
+        Config {
+            rules_version: RULES_V2,
             ..Config::default()
         }
     }
@@ -87,6 +108,13 @@ impl Config {
         if !(1..=120).contains(&self.dormant_after_periods) {
             return Err(EngineError::InvalidConfig(
                 "dormant period count out of range",
+            ));
+        }
+        if self.rules_version >= 3
+            && !(self.credit_cap_floor..=CLOSED_LOOP_LIMIT).contains(&self.credit_cap_ceiling)
+        {
+            return Err(EngineError::InvalidConfig(
+                "credit cap ceiling must be between the floor and $2,000",
             ));
         }
         Ok(())
@@ -1015,10 +1043,13 @@ impl Engine {
             let users: Vec<UserId> = self.subs.keys().copied().collect();
             for u in users {
                 let s = &self.subs[&u];
-                let cap = self
+                let mut cap = self
                     .cfg
                     .credit_cap_floor
                     .max(s.last_share.saturating_mul(2));
+                if self.cfg.rules_version >= 3 {
+                    cap = cap.min(self.cfg.credit_cap_ceiling);
+                }
                 let dormant = matches!(s.status, Status::Lapsed | Status::Ended)
                     && id >= s.paid_through + self.cfg.dormant_after_periods;
                 let (amount, reason) = if dormant {

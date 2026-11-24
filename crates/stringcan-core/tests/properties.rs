@@ -5,6 +5,7 @@ use common::pay;
 use proptest::prelude::*;
 use stringcan_core::{
     water_fill, Cents, Command, Config, Engine, FeeModel, Outcome, Status, CURRENT_RULES, RULES_V1,
+    RULES_V2,
 };
 
 proptest! {
@@ -76,17 +77,19 @@ fn config() -> impl Strategy<Value = Config> {
         prop_oneof![Just(FeeModel::ZERO), Just(FeeModel::STRIPE_US_CARD)],
         prop_oneof![Just(0u32), Just(1_000), Just(5_000), Just(20_000)],
         prop_oneof![Just(0u32), Just(500), Just(1_500)],
-        prop_oneof![Just(RULES_V1), Just(CURRENT_RULES)],
+        prop_oneof![Just(RULES_V1), Just(RULES_V2), Just(CURRENT_RULES)],
         prop_oneof![Just(0i64), Just(150), Just(10_000)],
         1u32..4,
+        prop_oneof![Just(150i64), Just(100_000)],
     )
-        .prop_map(|(fee, cap, sur, rules, floor, dormant)| Config {
+        .prop_map(|(fee, cap, sur, rules, floor, dormant, ceiling)| Config {
             fee,
             reserve_cap_bps: cap,
             reserve_surcharge_bps: sur,
             rules_version: rules,
             credit_cap_floor: floor,
             dormant_after_periods: dormant,
+            credit_cap_ceiling: ceiling.max(floor),
         })
 }
 

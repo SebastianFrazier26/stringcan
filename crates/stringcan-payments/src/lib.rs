@@ -2,6 +2,7 @@
 //! Stripe is swappable and tests never touch a network.
 
 mod fake;
+mod payout;
 mod plaid;
 mod stripe;
 mod transport;
@@ -12,6 +13,7 @@ use stringcan_core::Cents;
 use thiserror::Error;
 
 pub use fake::FakeProcessor;
+pub use payout::{match_payout_account, AchNumbers, PayoutBank, PayoutMatch};
 #[cfg(feature = "http")]
 pub use plaid::PlaidSandboxTransport;
 pub use plaid::{
@@ -105,4 +107,6 @@ pub trait ConnectAccounts: Send + Sync {
         return_url: &str,
     ) -> Result<String, ProcessorError>;
     async fn account_status(&self, account: &str) -> Result<AccountStatus, ProcessorError>;
+    /// Bank accounts Stripe can pay the connected account out to.
+    async fn payout_banks(&self, account: &str) -> Result<Vec<PayoutBank>, ProcessorError>;
 }

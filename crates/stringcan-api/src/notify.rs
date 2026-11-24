@@ -5,13 +5,75 @@
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use stringcan_core::{Cents, PeriodId};
+use sqlx::PgConnection;
+use stringcan_core::{Cents, PeriodId, UserId};
 use uuid::Uuid;
 
+use crate::error::ApiError;
+
 /// Owner decision 2026-11-23: notices go out 10 days before the billing date
-/// (California requires 7 to 30). The engine has no clock, so whoever calls
-/// `POST /v1/periods/{id}/notices` is responsible for the timing.
+/// (California requires 7 to 30). Enforced from the other side, approved
+/// 2026-11-23: a renewal is not charged until its notice is this old, so the
+/// caller still runs the notices job on time but cannot charge early.
 pub const NOTICE_LEAD_DAYS: u32 = 10;
+
+/// Records when each notice went out; call in the transaction that appends the
+/// `IssueNotices` command.
+pub async fn record_issued(
+    conn: &mut PgConnection,
+    tenant: Uuid,
+    period: PeriodId,
+    users: &[UserId],
+) -> Result<(), ApiError> {
+    let ids: Vec<i64> = users.iter().map(|&u| u as i64).collect();
+    sqlx::query(
+        "INSERT INTO price_notices (tenant_id, user_id, period)
+         SELECT $1, u, $3 FROM unnest($2::bigint[]) AS u
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(tenant)
+    .bind(&ids)
+    .bind(period as i32)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// `None` when the renewal may be charged now, else the unix time from which it
+/// may. A notice logged before `price_notices` existed falls back to the latest
+/// `IssueNotices` run for the period, which is never earlier than the real
+/// notice, so the fallback can only delay a charge, never allow an early one.
+pub async fn lead_wait(
+    conn: &mut PgConnection,
+    tenant: Uuid,
+    user: UserId,
+    period: PeriodId,
+    lead_days: u32,
+) -> Result<Option<i64>, ApiError> {
+    let row: (Option<i64>, Option<bool>) = sqlx::query_as(
+        "SELECT EXTRACT(EPOCH FROM ready)::BIGINT, ready <= now()
+         FROM (SELECT COALESCE(
+             (SELECT issued_at FROM price_notices
+              WHERE tenant_id = $1 AND user_id = $2 AND period = $3),
+             (SELECT max(created_at) FROM commands
+              WHERE tenant_id = $1
+                AND command @> jsonb_build_object('IssueNotices', jsonb_build_object('period', $3)))
+         ) + make_interval(days => $4) AS ready) t",
+    )
+    .bind(tenant)
+    .bind(user as i64)
+    .bind(period as i32)
+    .bind(lead_days as i32)
+    .fetch_one(conn)
+    .await?;
+    match row {
+        (Some(_), Some(true)) => Ok(None),
+        (Some(at), _) => Ok(Some(at)),
+        (None, _) => Err(ApiError::Internal(format!(
+            "notice for period {period} has no issue time"
+        ))),
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PriceNotice {

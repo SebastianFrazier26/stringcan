@@ -58,6 +58,17 @@ async fn build_with(
     bank: Option<BankState>,
     notifier: Arc<RecordingNotifier>,
 ) -> Option<(Router, sqlx::PgPool)> {
+    let fake = Arc::new(FakeProcessor::new(FeeModel::STRIPE_US_CARD));
+    build_full(require_connect, webhook_secret, bank, notifier, fake).await
+}
+
+async fn build_full(
+    require_connect: bool,
+    webhook_secret: Option<&str>,
+    bank: Option<BankState>,
+    notifier: Arc<RecordingNotifier>,
+    fake: Arc<FakeProcessor>,
+) -> Option<(Router, sqlx::PgPool)> {
     if std::env::var("STRINGCAN_TEST_DB").as_deref() != Ok("1") {
         eprintln!("skipping: STRINGCAN_TEST_DB is not 1");
         return None;
@@ -70,7 +81,6 @@ async fn build_with(
         .await
         .unwrap();
     MIGRATOR.run(&pool).await.unwrap();
-    let fake = Arc::new(FakeProcessor::new(FeeModel::STRIPE_US_CARD));
     let app = router(AppState {
         pool: pool.clone(),
         processor: fake.clone(),
@@ -203,7 +213,7 @@ async fn auth_is_required_and_scoped() {
 #[tokio::test]
 async fn full_cycle_persists_settles_and_publishes_a_pseudonymous_ledger() {
     let notifier = Arc::new(RecordingNotifier::default());
-    let Some((app, _)) = build_with(false, None, None, notifier.clone()).await else {
+    let Some((app, pool)) = build_with(false, None, None, notifier.clone()).await else {
         return;
     };
     let (tenant, key) = new_tenant(&app, 1000).await;
@@ -260,6 +270,20 @@ async fn full_cycle_persists_settles_and_publishes_a_pseudonymous_ledger() {
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, early) = call(
+        &app,
+        "POST",
+        "/v1/payments",
+        Some(&key),
+        Some(json!({"external_ref": "alice@example.com"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "notice is not 10 days old yet");
+    assert!(
+        early["error"].as_str().unwrap().contains("10 days"),
+        "{early}"
+    );
+    backdate_notices(&pool, &tenant, 10).await;
     let (_, again) = call(
         &app,
         "POST",
@@ -901,6 +925,19 @@ async fn bank_token_is_resealed_under_the_current_key_after_rotation() {
     assert_eq!(key_id, "k2");
 }
 
+/// Moves a tenant's notice times back, standing in for the wait before billing.
+async fn backdate_notices(pool: &sqlx::PgPool, tenant: &str, days: i32) {
+    sqlx::query(
+        "UPDATE price_notices SET issued_at = issued_at - make_interval(days => $2)
+         WHERE tenant_id = $1::uuid",
+    )
+    .bind(tenant)
+    .bind(days)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 async fn pay_ok(app: &Router, key: &str, who: &str) -> Value {
     let (s, v) = call(
         app,
@@ -1041,4 +1078,304 @@ async fn tenants_created_before_rules_v2_keep_v1_behaviour() {
             .await
             .unwrap();
     assert_eq!(versions, vec![1]);
+}
+
+#[tokio::test]
+async fn renewals_wait_for_the_ten_day_notice_lead() {
+    let Some((app, pool)) = app_with_pool().await else {
+        return;
+    };
+    let (tenant, key) = new_tenant(&app, 1000).await;
+    pay_ok(&app, &key, "bob").await;
+    let (s, _) = call(&app, "POST", "/v1/periods/2/notices", Some(&key), None).await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _) = call(
+        &app,
+        "PUT",
+        "/v1/subscribers/bob/renewal-cap",
+        Some(&key),
+        Some(json!({"max_charge_cents": 5000})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let renew = || {
+        call(
+            &app,
+            "POST",
+            "/v1/payments",
+            Some(&key),
+            Some(json!({"external_ref": "bob"})),
+        )
+    };
+
+    backdate_notices(&pool, &tenant, 9).await;
+    let (s, v) = renew().await;
+    assert_eq!(s, StatusCode::CONFLICT, "9 days is too early: {v}");
+
+    // A notice logged before notice times were recorded falls back to the latest
+    // notices run for the period, which is now: still too early.
+    sqlx::query("DELETE FROM price_notices WHERE tenant_id = $1::uuid")
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (s, _) = renew().await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    sqlx::query(
+        "UPDATE commands SET created_at = created_at - interval '10 days'
+         WHERE tenant_id = $1::uuid AND command ? 'IssueNotices'",
+    )
+    .bind(&tenant)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (s, v) = renew().await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["period"], 2);
+}
+
+#[tokio::test]
+async fn new_tenants_get_rules_v3_with_the_absolute_credit_ceiling() {
+    let Some((app, pool)) = app_with_pool().await else {
+        return;
+    };
+    let (tenant, _) = new_tenant(&app, 1000).await;
+    let cfg: Value = sqlx::query_scalar("SELECT engine_config FROM tenants WHERE id = $1::uuid")
+        .bind(&tenant)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(cfg["rules_version"], 3);
+    assert_eq!(cfg["credit_cap_ceiling"], 100_000);
+}
+
+fn auth_numbers(account: &str, number: &str, routing: &str) -> stringcan_payments::JsonResponse {
+    plaid_ok(&format!(
+        r#"{{"accounts":[],"numbers":{{"ach":[{{"account_id":"{account}","account":"{number}","routing":"{routing}","wire_routing":null}}]}},"request_id":"r"}}"#
+    ))
+}
+
+fn stripe_bank(routing: &str, last4: &str) -> stringcan_payments::PayoutBank {
+    stringcan_payments::PayoutBank {
+        routing_number: routing.into(),
+        last4: last4.into(),
+        currency: "usd".into(),
+        default_for_currency: true,
+    }
+}
+
+#[tokio::test]
+async fn the_linked_account_must_be_the_stripe_payout_account() {
+    let transport = Arc::new(JsonFixtureTransport::new([
+        // Without a Connect account the link stays owner-declared (no auth call).
+        exchanged("item-nc"),
+        balance("acct-chk", "depository", 50.0),
+        // A different account than Stripe pays out to: refused and revoked.
+        exchanged("item-wrong"),
+        balance("acct-chk", "depository", 50.0),
+        auth_numbers("acct-chk", "000099998888", "011401533"),
+        plaid_ok(r#"{"request_id":"r"}"#),
+        // The payout account: matched.
+        exchanged("item-right"),
+        balance("acct-chk", "depository", 50.0),
+        auth_numbers("acct-chk", "000011110000", "011401533"),
+        plaid_ok(r#"{"request_id":"r"}"#),
+        balance("acct-chk", "depository", 50.0),
+    ]));
+    let fake = Arc::new(FakeProcessor::new(FeeModel::STRIPE_US_CARD));
+    let bank = BankState {
+        link: Arc::new(Plaid::new(transport.clone(), "stringcan").unwrap()),
+        keys: Arc::new(Keyring::new(TOKEN_KEY, "").unwrap()),
+    };
+    let Some((app, pool)) = build_full(
+        false,
+        None,
+        Some(bank),
+        Arc::new(RecordingNotifier::default()),
+        fake.clone(),
+    )
+    .await
+    else {
+        return;
+    };
+    let (tenant, key) = new_tenant(&app, 1000).await;
+    let link = |token: &'static str| {
+        call(
+            &app,
+            "POST",
+            "/v1/bank/link",
+            Some(&key),
+            Some(json!({"public_token": token, "account_id": "acct-chk"})),
+        )
+    };
+
+    let (s, v) = link("public-sandbox-nc").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["payout_account"], "owner_declared");
+
+    let (s, _) = call(&app, "POST", "/v1/connect/account", Some(&key), None).await;
+    assert_eq!(s, StatusCode::OK);
+    let account: String =
+        sqlx::query_scalar("SELECT stripe_account_id FROM tenants WHERE id = $1::uuid")
+            .bind(&tenant)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    fake.set_payout_banks(&account, vec![stripe_bank("011401533", "0000")]);
+
+    let (s, v) = link("public-sandbox-wrong").await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert_eq!(transport.requests()[5].path, "/item/remove");
+    let item: String =
+        sqlx::query_scalar("SELECT item_id FROM bank_links WHERE tenant_id = $1::uuid")
+            .bind(&tenant)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        item, "item-nc",
+        "a refused link leaves the earlier one in place"
+    );
+
+    let (s, v) = link("public-sandbox-right").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["payout_account"], "matched");
+    assert_eq!(transport.requests()[8].path, "/auth/get");
+    // The earlier item is revoked once the new one is stored.
+    assert_eq!(transport.requests()[9].path, "/item/remove");
+
+    let (s, _) = call(&app, "GET", "/v1/bank/float", Some(&key), None).await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, ledger) = call(
+        &app,
+        "GET",
+        &format!("/v1/public/{tenant}/ledger"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(ledger["float_check"]["payout_account"], "matched");
+    let text = ledger.to_string();
+    assert!(!text.contains("011401533") && !text.contains("0000111"));
+    let stored: String = sqlx::query_scalar(
+        "SELECT row_to_json(b)::text FROM bank_links b WHERE tenant_id = $1::uuid",
+    )
+    .bind(&tenant)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(!stored.contains("011401533") && !stored.contains("000011110000"));
+}
+
+/// Funds every account it is asked about; lets the re-check run over whatever
+/// links other tests left in the shared database.
+struct AlwaysFunded;
+
+#[async_trait::async_trait]
+impl stringcan_payments::BankLink for AlwaysFunded {
+    async fn create_link_token(
+        &self,
+        _: &str,
+        _: &[stringcan_payments::LinkProduct],
+    ) -> Result<String, stringcan_payments::BankError> {
+        Ok("link-sandbox-x".into())
+    }
+    async fn exchange_public_token(
+        &self,
+        _: &str,
+    ) -> Result<stringcan_payments::LinkedItem, stringcan_payments::BankError> {
+        Ok(stringcan_payments::LinkedItem {
+            item_id: "item-z".into(),
+            access_token: stringcan_payments::AccessToken::from_stored(ACCESS_TOKEN.into())?,
+        })
+    }
+    async fn balances(
+        &self,
+        _: &stringcan_payments::AccessToken,
+        ids: &[String],
+    ) -> Result<Vec<stringcan_payments::BankBalance>, stringcan_payments::BankError> {
+        Ok(ids
+            .iter()
+            .map(|id| stringcan_payments::BankBalance {
+                account_id: id.clone(),
+                depository: true,
+                available: Some(100_000_000),
+                current: Some(100_000_000),
+                currency: Some("usd".into()),
+            })
+            .collect())
+    }
+    async fn remove_item(
+        &self,
+        _: &stringcan_payments::AccessToken,
+    ) -> Result<(), stringcan_payments::BankError> {
+        Ok(())
+    }
+    async fn ach_numbers(
+        &self,
+        _: &stringcan_payments::AccessToken,
+        _: &[String],
+    ) -> Result<Vec<stringcan_payments::AchNumbers>, stringcan_payments::BankError> {
+        Ok(vec![])
+    }
+}
+
+#[tokio::test]
+async fn daily_recheck_checks_only_links_not_checked_recently() {
+    let bank = BankState {
+        link: Arc::new(AlwaysFunded),
+        keys: Arc::new(Keyring::new(TOKEN_KEY, "").unwrap()),
+    };
+    let Some((app, pool)) = build_with_bank(false, None, Some(bank)).await else {
+        return;
+    };
+    let (due, due_key) = new_tenant(&app, 1000).await;
+    let (fresh, fresh_key) = new_tenant(&app, 1000).await;
+    for k in [&due_key, &fresh_key] {
+        let (s, v) = call(
+            &app,
+            "POST",
+            "/v1/bank/link",
+            Some(k),
+            Some(json!({"public_token": "public-sandbox-z", "account_id": "acct-z"})),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+    }
+    let (_, v) = call(&app, "GET", "/v1/bank/float", Some(&fresh_key), None).await;
+    assert_eq!(v["status"], "verified");
+    sqlx::query("UPDATE bank_links SET last_result = 'short' WHERE tenant_id = $1::uuid")
+        .bind(&fresh)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (s, _) = call(&app, "POST", "/v1/admin/bank/recheck", Some(&due_key), None).await;
+    assert_eq!(
+        s,
+        StatusCode::UNAUTHORIZED,
+        "owners cannot trigger the sweep"
+    );
+    let (s, sum) = call(&app, "POST", "/v1/admin/bank/recheck", Some(ADMIN), None).await;
+    assert_eq!(s, StatusCode::OK, "{sum}");
+    assert!(sum["checked"].as_u64().unwrap() >= 1);
+
+    let result = |t: String| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, Option<String>>(
+                "SELECT last_result FROM bank_links WHERE tenant_id = $1::uuid",
+            )
+            .bind(t)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(result(due).await.as_deref(), Some("verified"));
+    assert_eq!(
+        result(fresh).await.as_deref(),
+        Some("short"),
+        "checked within the day, so skipped"
+    );
 }

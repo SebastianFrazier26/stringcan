@@ -11,6 +11,8 @@ use serde_json::{json, Value};
 use stringcan_core::{Cents, MAX_CENTS};
 use thiserror::Error;
 
+use crate::payout::AchNumbers;
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum BankError {
     /// The owner must re-authenticate with their bank through Link update mode.
@@ -158,6 +160,13 @@ pub trait BankLink: Send + Sync {
     ) -> Result<Vec<BankBalance>, BankError>;
     /// Revokes the access token at Plaid. Call when an owner unlinks.
     async fn remove_item(&self, token: &AccessToken) -> Result<(), BankError>;
+    /// ACH routing number and last four digits (via `/auth/get`), only to check
+    /// the account is the Stripe payout account; the full number is dropped here.
+    async fn ach_numbers(
+        &self,
+        token: &AccessToken,
+        account_ids: &[String],
+    ) -> Result<Vec<AchNumbers>, BankError>;
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -396,6 +405,43 @@ impl<T: JsonTransport> BankLink for Plaid<T> {
         )
         .await
         .map(|_| ())
+    }
+
+    async fn ach_numbers(
+        &self,
+        token: &AccessToken,
+        account_ids: &[String],
+    ) -> Result<Vec<AchNumbers>, BankError> {
+        if account_ids.iter().any(|a| !opaque(a, 128)) {
+            return Err(BankError::Invalid("malformed account id"));
+        }
+        let mut body = json!({ "access_token": token.expose_secret() });
+        if !account_ids.is_empty() {
+            body["options"] = json!({ "account_ids": account_ids });
+        }
+        let v = self.call("/auth/get", body).await?;
+        let ach = v
+            .get("numbers")
+            .and_then(|n| n.get("ach"))
+            .and_then(Value::as_array)
+            .ok_or(BankError::Protocol("missing ach numbers"))?;
+        ach.iter()
+            .map(|a| {
+                let account = str_field(a, "account")?;
+                if account.len() < 4 || !account.chars().all(|c| c.is_ascii_digit()) {
+                    return Err(BankError::Protocol("unexpected account number"));
+                }
+                Ok(AchNumbers {
+                    account_id: str_field(a, "account_id")?,
+                    routing: str_field(a, "routing")?,
+                    last4: account[account.len() - 4..].to_owned(),
+                    tokenized: a
+                        .get("is_tokenized_account_number")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                })
+            })
+            .collect()
     }
 }
 

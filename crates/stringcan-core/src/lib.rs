@@ -12,7 +12,8 @@ mod waterfill;
 pub use engine::{
     Blocked, Charge, Command, Config, Contribution, Engine, EntryKind, JournalEntry, Notice,
     Outcome, Period, PeriodId, Quote, RefundLeg, RefundReason, Settlement, ShareRecord, Status,
-    Subscriber, UserId, CURRENT_RULES, MAX_REMEMBERED_CHARGES, RULES_V1,
+    Subscriber, UserId, CLOSED_LOOP_LIMIT, CURRENT_RULES, MAX_REMEMBERED_CHARGES, RULES_V1,
+    RULES_V2,
 };
 pub use error::EngineError;
 pub use money::{Cents, FeeModel, MAX_CENTS};

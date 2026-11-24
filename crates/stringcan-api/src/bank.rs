@@ -8,10 +8,13 @@ use axum::extract::State;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use stringcan_payments::{verify_float, AccessToken, BankError, BankLink, FloatCheck, LinkProduct};
+use stringcan_payments::{
+    match_payout_account, verify_float, AccessToken, BankError, BankLink, FloatCheck, LinkProduct,
+    PayoutMatch, ProcessorError,
+};
 use uuid::Uuid;
 
-use crate::auth::Owner;
+use crate::auth::{Admin, Owner};
 use crate::crypto::{Keyring, Sealed};
 use crate::error::ApiError;
 use crate::{store, AppState};
@@ -30,6 +33,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/bank/link-token", post(link_token))
         .route("/v1/bank/link", post(exchange).delete(unlink))
         .route("/v1/bank/float", get(float_status))
+        .route("/v1/admin/bank/recheck", post(recheck))
 }
 
 fn bank(st: &AppState) -> Result<&BankState, ApiError> {
@@ -86,6 +90,49 @@ struct ExchangeBody {
 #[derive(Serialize)]
 struct LinkedBody {
     account_id: String,
+    /// `matched` (it is the Stripe payout account) or `owner_declared`.
+    payout_account: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    payout_reason: Option<&'static str>,
+}
+
+/// DESIGN 20.4, owner-approved 2026-11-23: compare routing number and last four
+/// with the Stripe payout account and refuse a mismatch. When either side
+/// cannot say, the account stays owner-declared and the public ledger says so.
+async fn check_payout_account(
+    st: &AppState,
+    b: &BankState,
+    tenant: Uuid,
+    token: &AccessToken,
+    account_id: &str,
+) -> Result<(&'static str, Option<&'static str>), ApiError> {
+    let (stripe_account, currency): (Option<String>, String) =
+        sqlx::query_as("SELECT stripe_account_id, currency FROM tenants WHERE id = $1")
+            .bind(tenant)
+            .fetch_one(&st.pool)
+            .await?;
+    let declared = |why| Ok(("owner_declared", Some(why)));
+    let Some(stripe_account) = stripe_account else {
+        return declared("no Stripe connected account yet");
+    };
+    let banks = match st.connect.payout_banks(&stripe_account).await {
+        Ok(banks) => banks,
+        Err(ProcessorError::Rejected(_)) => return declared("Stripe did not list payout accounts"),
+        Err(e) => return Err(e.into()),
+    };
+    let numbers = match b.link.ach_numbers(token, &[account_id.to_owned()]).await {
+        Ok(n) => n,
+        Err(BankError::Rejected(_)) => return declared("bank did not report account numbers"),
+        Err(e) => return Err(e.into()),
+    };
+    let ours = numbers.iter().find(|n| n.account_id == account_id);
+    match match_payout_account(ours, &banks, &currency.to_ascii_lowercase()) {
+        PayoutMatch::Matched => Ok(("matched", None)),
+        PayoutMatch::Mismatch => Err(ApiError::BadRequest(
+            "this is not the bank account Stripe pays this tenant out to".into(),
+        )),
+        PayoutMatch::Unknown(why) => declared(why),
+    }
 }
 
 struct StoredLink {
@@ -164,6 +211,8 @@ async fn exchange(
             }
             None => return Err(ApiError::BadRequest("account_id is not on this bank link".into())),
         }
+        let payout =
+            check_payout_account(&st, b, tenant, &item.access_token, &body.account_id).await?;
         let sealed = b.keys.seal(tenant, item.access_token.expose_secret());
         let mut tx = st.pool.begin().await?;
         let previous: Option<(String, Vec<u8>, Vec<u8>)> = sqlx::query_as(
@@ -173,10 +222,11 @@ async fn exchange(
         .fetch_optional(&mut *tx)
         .await?;
         sqlx::query(
-            "INSERT INTO bank_links (tenant_id, item_id, account_id, token_key_id, token_nonce, token_ciphertext)
-             VALUES ($1, $2, $3, $4, $5, $6)
+            "INSERT INTO bank_links (tenant_id, item_id, account_id, token_key_id, token_nonce, token_ciphertext, payout_account_check)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
              ON CONFLICT (tenant_id) DO UPDATE SET item_id = $2, account_id = $3, token_key_id = $4,
-               token_nonce = $5, token_ciphertext = $6, linked_at = now(), last_checked_at = NULL, last_result = NULL",
+               token_nonce = $5, token_ciphertext = $6, payout_account_check = $7, linked_at = now(),
+               last_checked_at = NULL, last_result = NULL",
         )
         .bind(tenant)
         .bind(&item.item_id)
@@ -184,14 +234,15 @@ async fn exchange(
         .bind(&sealed.key_id)
         .bind(&sealed.nonce)
         .bind(&sealed.ciphertext)
+        .bind(payout.0)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        Ok(previous)
+        Ok((previous, payout))
     }
     .await;
     match result {
-        Ok(previous) => {
+        Ok((previous, (payout_account, payout_reason))) => {
             if let Some((key_id, nonce, ciphertext)) = previous {
                 let sealed = Sealed {
                     key_id,
@@ -204,6 +255,8 @@ async fn exchange(
             }
             Ok(Json(LinkedBody {
                 account_id: body.account_id,
+                payout_account,
+                payout_reason,
             }))
         }
         Err(e) => {
@@ -263,6 +316,16 @@ async fn float_status(
     State(st): State<AppState>,
 ) -> Result<Json<FloatBody>, ApiError> {
     let b = bank(&st)?;
+    check_float(&st, b, tenant).await.map(Json)
+}
+
+/// One float check for one tenant, recorded for the public ledger. Shared by the
+/// on-demand route and the daily re-check.
+pub async fn check_float(
+    st: &AppState,
+    b: &BankState,
+    tenant: Uuid,
+) -> Result<FloatBody, ApiError> {
     let link = stored_link(&st.pool, tenant)
         .await?
         .ok_or_else(|| ApiError::Conflict("link the payout bank account first".into()))?;
@@ -318,13 +381,66 @@ async fn float_status(
     .bind(&link.item_id)
     .execute(&st.pool)
     .await?;
-    Ok(Json(body))
+    Ok(body)
+}
+
+/// A link checked less recently than this is due. Under 24 hours so a daily
+/// trigger that fires a little early still re-checks every tenant.
+pub const RECHECK_AFTER_HOURS: i32 = 20;
+const RECHECK_BATCH: i64 = 500;
+
+#[derive(Debug, Default, PartialEq, Eq, Serialize)]
+pub struct RecheckSummary {
+    pub checked: usize,
+    pub verified: usize,
+    pub short: usize,
+    pub unverifiable: usize,
+    pub failed: usize,
+}
+
+/// The daily re-check (DESIGN 20.4, owner-approved 2026-11-23). There is no
+/// scheduler in the service: the deployment's cron calls
+/// `POST /v1/admin/bank/recheck` once a day. Due links go oldest first, at most
+/// one batch per call, and one tenant's failure does not stop the rest.
+pub async fn recheck_due(st: &AppState, b: &BankState) -> Result<RecheckSummary, ApiError> {
+    let due: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT tenant_id FROM bank_links
+         WHERE last_checked_at IS NULL OR last_checked_at < now() - make_interval(hours => $1)
+         ORDER BY last_checked_at NULLS FIRST LIMIT $2",
+    )
+    .bind(RECHECK_AFTER_HOURS)
+    .bind(RECHECK_BATCH)
+    .fetch_all(&st.pool)
+    .await?;
+    let mut sum = RecheckSummary::default();
+    for tenant in due {
+        sum.checked += 1;
+        match check_float(st, b, tenant).await {
+            Ok(r) => match r.status {
+                "verified" => sum.verified += 1,
+                "short" => sum.short += 1,
+                _ => sum.unverifiable += 1,
+            },
+            Err(e) => {
+                sum.failed += 1;
+                tracing::warn!(%tenant, error = %e, "daily float re-check failed");
+            }
+        }
+    }
+    Ok(sum)
+}
+
+async fn recheck(_: Admin, State(st): State<AppState>) -> Result<Json<RecheckSummary>, ApiError> {
+    let b = bank(&st)?;
+    recheck_due(&st, b).await.map(Json)
 }
 
 #[derive(Serialize)]
 pub struct PublicFloat {
     pub status: String,
     pub checked_at_unix: i64,
+    /// `matched` to the Stripe payout account, or `owner_declared`.
+    pub payout_account: String,
 }
 
 /// Last recorded pass/fail for the public ledger; `None` when never checked.
@@ -332,15 +448,18 @@ pub async fn last_public_check(
     conn: &mut sqlx::PgConnection,
     tenant: Uuid,
 ) -> Result<Option<PublicFloat>, ApiError> {
-    let row: Option<(String, i64)> = sqlx::query_as(
-        "SELECT last_result, EXTRACT(EPOCH FROM last_checked_at)::BIGINT FROM bank_links
+    let row: Option<(String, i64, String)> = sqlx::query_as(
+        "SELECT last_result, EXTRACT(EPOCH FROM last_checked_at)::BIGINT, payout_account_check FROM bank_links
          WHERE tenant_id = $1 AND last_result IS NOT NULL",
     )
     .bind(tenant)
     .fetch_optional(conn)
     .await?;
-    Ok(row.map(|(status, checked_at_unix)| PublicFloat {
-        status,
-        checked_at_unix,
-    }))
+    Ok(
+        row.map(|(status, checked_at_unix, payout_account)| PublicFloat {
+            status,
+            checked_at_unix,
+            payout_account,
+        }),
+    )
 }

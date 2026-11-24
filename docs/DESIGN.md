@@ -1,6 +1,6 @@
 # stringcan design
 
-Status: draft v0, 2026-11-23. Rules marked **DEFAULT (owner-confirmed 2026-11-23)** were chosen by the author with a stated alternative, then accepted by the product owner ("they seem ok") on 2026-11-23. Rules marked **PROPOSED DEFAULT (owner to confirm)** are newer (section 20) and still await the owner. Rules without a mark follow directly from the product idea. The owner has also decided: payments go through **Stripe Connect**, and money is **held in the app owner's own bank account** (section 20).
+Status: draft v0, 2026-11-23. Rules marked **DEFAULT (owner-confirmed 2026-11-23)** were chosen by the author with a stated alternative, then accepted by the product owner ("they seem ok") on 2026-11-23. Rules marked **PROPOSED DEFAULT (owner to confirm)** await the owner. On 2026-11-23 the owner approved every agent recommendation and proposed default then in this document ("design doc looks good, all recommendations fly"); those are now marked **ADOPTED 2026-11-23 (owner approved)**, and the few items that had no recommendation stay open (section 20.10). Rules without a mark follow directly from the product idea. The owner has also decided: payments go through **Stripe Connect**, and money is **held in the app owner's own bank account** (section 20).
 
 ## 1. The idea in one paragraph
 
@@ -108,7 +108,7 @@ At settlement, with contributions `C` (including prefund) below the upkeep plus 
 - **Cap.** `cap = ceil(U * reserve_cap_bps / 10_000)`.
 - **DEFAULT (owner-confirmed 2026-11-23): `surcharge_bps = 0` and `reserve_cap_bps = 5_000` (half a period of upkeep).** With surcharge 0, the reserve stays at zero unless the owner opts in, which keeps the pure "exactly break even" promise literally true. Alternative: a small build surcharge (e.g. 300 bps = 3 percent) until the reserve reaches the cap, trading a slightly higher price for price stability when people leave.
 - **Excess above the cap** (the cap shrank because upkeep fell): the excess is *released* as prefund into the next period's pool, which lowers the amount subscribers must pay. Nobody is refunded in cash. **DEFAULT (owner-confirmed 2026-11-23).** Alternative: pro-rata credits to current subscribers.
-- The reserve is the tenant pool's money, never the owner's. The owner cannot withdraw from it; it is released only by the rules above.
+- **ADOPTED 2026-11-23 (owner approved)**, P7 (section 20.7): the reserve is **an owner liability to the subscriber pool, released only by these rules; stringcan publishes it but cannot lock it.** The cash sits in the owner's own account (section 20.3). Replaces the earlier wording ("the tenant pool's money, never the owner's ... cannot withdraw"), which could be read as a declaration of trust and contradicted 20.3.
 
 ## 9. Rounding and processor fees
 
@@ -172,6 +172,8 @@ Let a period settle with target `T`, participants `i` with contributions `c_i`, 
 10. **Quote is monotone**: with no payments in between, a joiner's presence never raises anyone else's quote.
 11. **Credit stays with its owner** (all versions): each subscriber's credit equals what was issued to them minus what they spent and had refunded, reconciled from the journal by `audit()`; no command moves credit between subscribers, and each tenant is its own engine.
 12. **Rules v2**: a renewer's share never exceeds the noticed ceiling; no charge is refunded beyond its amount; after a settlement no subscriber with refundable charges holds credit above their cap or keeps dormant credit.
+13. **Rules v3**: as 12, with the cap also bounded by the absolute `credit_cap_ceiling` (at most $2,000).
+14. **Never acts for subscribers** (written rule, P2; not a property test): no subscriber payment credentials, no movement of money or credit between subscribers, no subscriber wallet. See `docs/legal/no-subscriber-agency.md`.
 
 ## 15. Legal and compliance notes (flagged, not decided)
 
@@ -221,6 +223,7 @@ Decided at design time:
 - Compile-checked SQL (`cargo sqlx prepare` in CI).
 - Chargebacks, per-seat variable cost, annual plans, subscriber tokens and portal, email notices of price changes.
 - Dunning scheduler (the engine exposes lapse; a job triggers it).
+- A scheduler in general. The daily float re-check (20.4) and the notices job (20.8) are endpoints for an external cron to call; Plaid webhooks (20.4, adopted) are not built.
 - Rate limiting and request tracing.
 
 ## 19. Assumptions made while brainstorming (author answered, owner-confirmed 2026-11-23)
@@ -233,7 +236,7 @@ Decided at design time:
 
 ## 20. Custody, Stripe Connect and money flows
 
-Status: **ACCEPTED** (owner, 2026-11-23). Owner decisions, 2026-11-23: use **Stripe Connect**; money is **held in the app owner's own bank account**; the plan below (Standard accounts, direct charges, owner as merchant of record, credits and reserve as ledger-only claims, no application fee) is approved as written; **Plaid is approved** for reading the owner's bank account (20.4). The owner recorded positions on the 20.5 questions on 2026-11-23 (owner positions, not legal advice); a lawyer still reviews them before live mode, and the analysis and proposed changes are in 20.7 to 20.9. Rules still marked PROPOSED DEFAULT inside this section (20.3 float publication and credit-refund limit, 20.4 balance rule) await the owner. Nothing here is legal advice (section 20.5).
+Status: **ACCEPTED** (owner, 2026-11-23). Owner decisions, 2026-11-23: use **Stripe Connect**; money is **held in the app owner's own bank account**; the plan below (Standard accounts, direct charges, owner as merchant of record, credits and reserve as ledger-only claims, no application fee) is approved as written; **Plaid is approved** for reading the owner's bank account (20.4). The owner recorded positions on the 20.5 questions on 2026-11-23 (owner positions, not legal advice); a lawyer still reviews them before live mode, and the analysis and proposed changes are in 20.7 to 20.9. The rules that were still proposed inside this section were approved by the owner on 2026-11-23 and are marked ADOPTED; see 20.10 for the list and for what stays open. Nothing here is legal advice (section 20.5).
 
 ### 20.1 Shape
 
@@ -270,7 +273,7 @@ With money sitting in the owner's Stripe balance and bank account, **credits and
 
 The owner physically holds the cash for all three. The engine already computes the exact amount the owner must hold: the **required float** = `reserve + credits_outstanding + open_pool` (the same terms as invariant 4). The public ledger will show it. This is a promise, not a lock: stringcan cannot stop an owner spending it (that would require stringcan to control funds).
 
-- PROPOSED DEFAULT (owner to confirm): the required float is published, and the owner is asked to keep at least that much in their Stripe balance or linked bank account. Optional verification (20.4) turns that into something a subscriber can trust. Alternative: Stripe payouts set to manual with a holdback, which gives real lock-up but needs Express or Custom accounts (platform-controlled payout schedules), pushing stringcan toward holding funds in effect.
+- **ADOPTED 2026-11-23 (owner approved)**: the required float is published, and the owner is asked to keep at least that much in their Stripe balance or linked bank account. Optional verification (20.4) turns that into something a subscriber can trust. Alternative: Stripe payouts set to manual with a holdback, which gives real lock-up but needs Express or Custom accounts (platform-controlled payout schedules), pushing stringcan toward holding funds in effect.
 - **Refunding credit.** A cash refund of credit is a Stripe refund created on the connected account against the subscriber's most recent successful charge, up to that charge's amount. It returns the money to the card, debits the owner's balance, and Stripe does not return the original processing fee (consistent with section 9: that fee is a cost). Rules v1 refund credit only up to the latest charge and reject a larger credit. **Rules v2 (owner, 2026-11-23, P3):** the refund is split across the subscriber's own recent charges, newest first, each leg capped at what that charge has not yet had refunded; see 20.7.
 - **Chargebacks** hit the owner's account. They are not yet modelled in the engine (section 11); the webhook handler records `charge.dispute.created` events so they are not lost.
 - If an owner stops operating or abandons the tenant, credits and reserve are an unsecured claim on the owner. Said plainly in subscriber-facing terms, this is the residual trust cost of "money in the owner's account" and the reason the float is published and optionally verified.
@@ -290,15 +293,19 @@ Implemented (this branch, sandbox only): `stringcan-payments::plaid`, a `BankLin
 
 - Security posture: sandbox only (`PLAID_ENV` must be `sandbox`, and the live transport is hard-wired to `sandbox.plaid.com`); credentials sent as `PLAID-CLIENT-ID` / `PLAID-SECRET` headers by the transport, so request bodies and fixtures never contain them; config and access token redact in `Debug` and the token has no `Display`; Plaid's free-text error messages are dropped, only `error_type` / `error_code` are kept; `client_user_id` must be an opaque ref (no email or name).
 - The Plaid **access token is a credential, not an opaque id** (it grants ongoing read access to the owner's bank data), so the "store only opaque ids" rule in 20.5 cannot cover it as is. It is stored encrypted (owner decision below).
-- PROPOSED DEFAULT (owner to confirm): an account counts its `available` balance, falling back to `current` only when the bank reports no `available`; only depository accounts count (credit, loan and investment never do); a missing balance or a currency other than the tenant's makes the check Unverifiable rather than guessed. Alternative: count `min(available, current)`, or `current` only (higher, includes pending debits not yet cleared).
+- **ADOPTED 2026-11-23 (owner approved)**: an account counts its `available` balance, falling back to `current` only when the bank reports no `available`; only depository accounts count (credit, loan and investment never do); a missing balance or a currency other than the tenant's makes the check Unverifiable rather than guessed. Alternative: count `min(available, current)`, or `current` only (higher, includes pending debits not yet cleared).
 - **Owner decisions, 2026-11-23:**
   - **Access token storage:** encrypted in Postgres (`bank_links`), sealed with an AEAD (XChaCha20-Poly1305, RustCrypto `chacha20poly1305`) under a key from the secret store (`STRINGCAN_TOKEN_KEY`, an env var in dev; `.env.example` carries a dummy). The tenant id is associated data, so a ciphertext moved to another tenant's row does not decrypt. A `token_key_id` column names the sealing key; retired keys (`STRINGCAN_TOKEN_KEYS_RETIRED`) still decrypt, and a row is re-sealed under the current key the next time it is read. XChaCha20 was picked over AES-256-GCM because its 24-byte nonce is safe to draw at random.
   - **Link product: `auth` only.**
   - **Only the account that receives Stripe payouts counts toward the float.** The owner names that account (the Plaid `account_id` picked in Link) when exchanging the public token; it must be a depository account on the item, and every balance read and float check is restricted to it.
 - Implemented (sandbox only): `POST /v1/bank/link-token`, `POST /v1/bank/link` (exchange plus payout account; replaces and revokes any earlier item), `DELETE /v1/bank/link` (revokes at Plaid, deletes the row), `GET /v1/bank/float` (on-demand check, returns `verified` / `short` / `unverifiable` and never amounts). The latest result and its time are shown on the public ledger as `float_check`. A bank needing re-login, or a revoked link, reads as unverifiable rather than as an error. The routes are off unless `PLAID_CLIENT_ID` is set.
-- PROPOSED DEFAULT (owner to confirm): **re-check daily plus on demand.** v0 has only the on-demand route; the daily job is not built (no scheduler yet, section 18). Alternative: on demand only, or before each settlement.
-- PROPOSED DEFAULT (owner to confirm): **Plaid webhooks** are JWT-signed (ES256, key fetched from `/webhook_verification_key/get`); proposed: verify the JWT and the body hash, handle only `ITEM` errors and `PENDING_DISCONNECT` / `LOGIN_REPAIRED` to flip the published status to unverifiable, ignore the rest. Not built.
-- Not yet enforced: that the named account is in fact the Stripe payout account. It is owner-declared. PROPOSED follow-up: with `auth`, compare the account's routing number and last four digits (`/auth/get`) with the Stripe external account on the connected account, and refuse a mismatch. Alternative: keep it owner-declared and say so on the public ledger.
+- **ADOPTED 2026-11-23 (owner approved)**: **re-check daily plus on demand.** Alternative: on demand only, or before each settlement. Built 2026-11-23 as scaffolding: `bank::recheck_due` re-checks every link not checked in the last 20 hours (under 24 so a daily trigger that fires early still covers everyone), oldest first, up to 500 per call; one tenant's failure is counted and logged and does not stop the rest. The service has no scheduler (section 18), so the deployment's cron calls the admin-only `POST /v1/admin/bank/recheck` once a day.
+- **ADOPTED 2026-11-23 (owner approved)**: **Plaid webhooks** are JWT-signed (ES256, key fetched from `/webhook_verification_key/get`); proposed: verify the JWT and the body hash, handle only `ITEM` errors and `PENDING_DISCONNECT` / `LOGIN_REPAIRED` to flip the published status to unverifiable, ignore the rest. Webhooks only ever mark the published status unverifiable. Not built yet.
+- **Payout-account verification, ADOPTED 2026-11-23 (owner approved):** with `auth`, compare the account's routing number and last four digits (`/auth/get`) with the Stripe external account on the connected account, and refuse a mismatch. The rejected alternative (keep it owner-declared and say so on the public ledger) is kept only as the fallback when a match cannot be checked. Built 2026-11-23:
+  - On `POST /v1/bank/link`, if the tenant has a Stripe connected account, the API lists its bank accounts (`GET /v1/accounts/{acct}/external_accounts?object=bank_account`) and reads the named Plaid account's ACH numbers. It compares routing number and last four with Stripe's default payout account in the tenant currency (or any account in that currency when none is flagged default). A mismatch is refused (422) and the new Plaid item revoked; the previous link stays.
+  - When it cannot be checked (no connected account yet, Stripe refuses to list the accounts, the bank reports no numbers, or the bank uses tokenized account numbers whose last four differ from the real ones), the link is stored as `owner_declared`. The public ledger shows `float_check.payout_account` as `matched` or `owner_declared`.
+  - Only routing number and last four are compared, in memory. No account or routing number is stored, logged or returned; `AchNumbers` redacts them in `Debug`.
+  - Unverified against live services: whether Stripe lets a platform list a **Standard** account's external accounts (if not, every link is `owner_declared` and this check needs Financial Connections or owner-provided evidence instead), and Plaid's `is_tokenized_account_number` field name. Fixtures are hand-written.
 
 Original recommendation (superseded on the Plaid-vs-Financial-Connections point):
 
@@ -331,7 +338,7 @@ Which choices help avoid stringcan being treated as a money transmitter or payme
 
 ### 20.7 Consequences of the owner positions (analysis, not legal advice)
 
-Researched 2026-11-23. This is an engineer's reading of public sources, **not legal advice**; laws and their status change, so re-check before relying on it. Sources and how strong each is are listed at the end of 20.8. Nothing below is adopted: the "proposed design changes" are for the owner to accept or reject.
+Researched 2026-11-23. This is an engineer's reading of public sources, **not legal advice**; laws and their status change, so re-check before relying on it. Sources and how strong each is are listed at the end of 20.8. All eight proposed design changes below were adopted by the owner on 2026-11-23 as design directions. The legal ones (P1, P2, P8) still need counsel before live mode.
 
 **(1) "stringcan acts as a payment agent."** Calling stringcan an agent has real consequences, and the safer framing may be narrower than the owner's.
 
@@ -349,16 +356,16 @@ Researched 2026-11-23. This is an engineer's reading of public sources, **not le
 
 **(3) Reserve without trust or segregation duties.** No statute found imposes trust accounting on an ordinary merchant for a voluntary price buffer. The risk is self-inflicted wording: section 8 says the reserve "is the tenant pool's money, never the owner's" and "the owner cannot withdraw from it". Language like that, published to subscribers, can be read as a declaration of trust in favour of the pool, which is exactly the duty the owner wants to avoid, and it contradicts 20.3 (the float is "a promise, not a lock"). Consistent wording would call the reserve an **owner liability to the pool, released only by the published rules**.
 
-**Proposed design changes.** Owner decision 2026-11-23: **P3, P4, P5 and P6 ADOPTED** and implemented as rules v2 (below). P1, P2, P7 and P8 are still proposed and unanswered.
+**Proposed design changes.** Owner decision 2026-11-23: **P3, P4, P5 and P6 ADOPTED** and implemented as rules v2 (below). **P1, P2, P7 and P8 ADOPTED 2026-11-23 (owner approved)** as recommended: P1 and P2 are drafted as templates in `docs/legal/` (draft for lawyer review, not legal advice), P7 is the new wording in section 8, and P8 is the EU position below.
 
-- P1. **Agent-of-payee terms with each owner.** The owner agreement appoints stringcan as the owner's limited agent for computing prices and instructing Stripe to create charges and refunds on the owner's account; states that stringcan never receives, holds or transmits funds; and states that a subscriber's payment to the owner's Stripe account discharges the subscriber's obligation. Owner-facing subscriber terms and receipts name stringcan as the owner's service provider. Cheap belt-and-braces for (1) in MTMA states.
-- P2. **Never act for subscribers.** No subscriber-side agency: stringcan does not hold subscriber payment credentials, does not move money between subscribers, and has no subscriber wallet. (Already true; P2 makes it a written invariant.)
+- P1. **ADOPTED 2026-11-23 (owner approved); template drafted, `docs/legal/owner-agreement-agent-of-payee.md`.** **Agent-of-payee terms with each owner.** The owner agreement appoints stringcan as the owner's limited agent for computing prices and instructing Stripe to create charges and refunds on the owner's account; states that stringcan never receives, holds or transmits funds; and states that a subscriber's payment to the owner's Stripe account discharges the subscriber's obligation. Owner-facing subscriber terms and receipts name stringcan as the owner's service provider. Cheap belt-and-braces for (1) in MTMA states.
+- P2. **ADOPTED 2026-11-23 (owner approved); written rule, `docs/legal/no-subscriber-agency.md` and invariant 14.** **Never act for subscribers.** No subscriber-side agency: stringcan does not hold subscriber payment credentials, does not move money between subscribers, and has no subscriber wallet. (Already true; P2 makes it a written invariant.)
 - P3. **ADOPTED 2026-11-23.** **Credits redeemable only from the owner's own Stripe account, only as a refund to the original payment method**, capped at the original charge (already the 20.3 v0 rule; P3 makes it permanent rather than a v0 limitation). No bank transfers, no cash, no payout to a different person.
 - P4. **ADOPTED 2026-11-23, cap = max($100, two of the subscriber's shares).** **Credit cap per subscriber per tenant**, well under the $2,000 closed-loop line: e.g. the larger of $100 or two periods' shares; anything above the cap is refunded automatically to the card instead of being held. Keeps every subscriber's balance small and short-lived.
 - P5. **ADOPTED 2026-11-23.** **Credits are non-transferable and tenant-scoped**: never moved between subscribers, never usable at another tenant, never pooled across tenants (keeps them closed loop and out of EU e-money).
 - P6. **ADOPTED 2026-11-23.** **Dormant-credit sweep**: credits unused for N periods after a subscriber ends are refunded to the card automatically, which shrinks escheat exposure.
-- P7. **Reserve wording**: change section 8 from "the tenant pool's money, never the owner's ... cannot withdraw" to "an owner liability to the pool, released only by these rules; stringcan publishes it but cannot lock it" (consistent with 20.3 and owner position 3).
-- P8. **EU framing**: rely on "never in possession of funds" (technical service provider) rather than the commercial-agent exclusion.
+- P7. **ADOPTED 2026-11-23 (owner approved); section 8 reworded.** **Reserve wording**: change section 8 from "the tenant pool's money, never the owner's ... cannot withdraw" to "an owner liability to the pool, released only by these rules; stringcan publishes it but cannot lock it" (consistent with 20.3 and owner position 3).
+- P8. **ADOPTED 2026-11-23 (owner approved).** **EU framing**: rely on "never in possession of funds" (technical service provider, PSD2 Article 3(j)) rather than the commercial-agent exclusion. Consequence for design: stringcan must never take possession of funds in the EU either (no platform balance, no transfers, no pass-through); a change that would is an EU licensing question, not only a US one. Counsel to confirm, including under PSD3/PSR once in force.
 
 **Rules v2: how P3 to P6 are implemented (2026-11-23).** Each tenant carries a rules version in its engine config, fixed at creation; tenants stored before this change are v1 and replay under the v1 rules, new tenants are v2. In v2:
 
@@ -366,12 +373,14 @@ Researched 2026-11-23. This is an engineer's reading of public sources, **not le
 - At each settlement, a subscriber's credit above `max(credit_cap_floor, 2 * last settled share)` is refunded to their charges (P4). `credit_cap_floor` defaults to 10,000 cents ($100).
 - No command moves credit between subscribers; `audit()` reconciles each subscriber's credit with their own journal entries, and tenants never share an engine (P5).
 - At each settlement, a lapsed or ended subscriber's whole credit is refunded once `dormant_after_periods` have passed since the last period they paid for (P6).
-- PROPOSED DEFAULT (owner to confirm): `dormant_after_periods = 3`. Alternative: 1 (sweep at once) or 12.
-- PROPOSED DEFAULT (owner to confirm): the engine remembers a subscriber's last **6** charges as refund targets, since card refunds get harder as charges age (Stripe's exact refund window was not checked). Alternative: remember all charges.
-- Known gap: credit above the cap, or dormant credit, that no remembered charge can absorb stays as credit and is flagged by nothing yet. Possible fix: list such balances for the owner to settle by hand.
-- Note: with a large share, two shares can exceed FinCEN's $2,000 closed-loop line (20.7). Possible fix: also cap at an absolute ceiling below $2,000.
+- **ADOPTED 2026-11-23 (owner approved)**: `dormant_after_periods = 3`. Alternative: 1 (sweep at once) or 12.
+- **ADOPTED 2026-11-23 (owner approved)**: the engine remembers a subscriber's last **6** charges as refund targets, since card refunds get harder as charges age (Stripe's exact refund window was not checked). Alternative: remember all charges.
+- Known gap, **still open** (no recommendation was made, only a possible fix): credit above the cap, or dormant credit, that no remembered charge can absorb stays as credit and is flagged by nothing yet. Possible fix: list such balances for the owner to settle by hand.
+- Note: with a large share, two shares can exceed FinCEN's $2,000 closed-loop line (20.7). **Fixed 2026-11-23 (owner approved), rules v3:** new tenants are v3 (v1 and v2 tenants replay unchanged). In v3 the cap is `min(credit_cap_ceiling, max(credit_cap_floor, 2 * last settled share))`. `credit_cap_ceiling` must lie between the floor and $2,000 (200,000 cents) or the config is refused.
+- PROPOSED DEFAULT (owner to confirm; agent pick 2026-11-23, since the approval named a limit but not a value): `credit_cap_ceiling = 100,000` cents ($1,000). It leaves headroom under the $2,000 line, which FinCEN counts per device per day, and it equals the open-loop limit. Alternative: $1,999 (the most the approval allows) or $500.
+- Still true in v3: credit is issued only at settlement and the cap is applied in the same command, so between commands no subscriber with a refundable charge holds credit above the ceiling. The known gap above (credit no remembered charge can absorb) also applies to the ceiling.
 
-### 20.8 Variable monthly prices: notice and consent (research; OWNER DECISION NEEDED)
+### 20.8 Variable monthly prices: notice and consent (research; owner decided N3, 2026-11-23)
 
 Researched 2026-11-23; not legal advice. The issue: a renewer's charge is the live quote on the billing date (section 4), which falls as people join and can rise when people lapse or upkeep is revised (assumption A2). Several regimes require advance notice of a changed amount, or treat unilateral price changes as unfair unless the method is clear.
 
@@ -396,10 +405,11 @@ The tightest constraint is California's 7-to-30-day notice of a change in amount
 
 - `IssueNotices { period }` (API `POST /v1/periods/{id}/notices`, the notifications job) logs, for every renewer who owes the period, a ceiling equal to the live share at that moment, and journals it as a public `PriceNotice` entry. A ceiling, once noticed, is never raised; re-running notices only reaches renewers who have none.
 - A renewal (an active subscriber paying a later period than they last paid) is refused without a notice for that period. Its share is `min(live share, ceiling)`. If people leave after the notice, the gap is a shortfall that the reserve and then the carried deficit absorb (section 7).
-- `SetRenewalCap` (API `PUT /v1/subscribers/{ref}/renewal-cap`) records the subscriber's express consent to renew up to a gross amount. The command row and its timestamp are the consent record. A renewal whose ceiling, fees included, is above the cap (or with no cap on file) is refused until fresh consent raises the cap; without it the subscriber lapses at settlement and is not charged.
+- `SetRenewalCap` (API `PUT /v1/subscribers/{ref}/renewal-cap`) records the subscriber's express consent to renew up to a gross amount. The command row and its timestamp are the consent record. A renewal whose ceiling, fees included, is above the cap (or with no cap on file) is refused until fresh consent raises the cap; without it the subscriber lapses at settlement and is not charged. **Consent is required when no cap is on file: ADOPTED 2026-11-23 (owner approved).**
 - New and lapsed subscribers paying are on-session purchases at the live quote and need no notice.
 - Delivery: a `Notifier` trait. `LogNotifier` (the default) only logs that a notice was due, without the subscriber ref; `RecordingNotifier` is the test double. Notices are delivered before the command commits, so a delivery failure records nothing. **No real email or other channel is built.**
-- Not enforced yet: the 10-day lead. The engine has no clock and there is no scheduler, so the caller must run the job 10 days before the billing date (7 to 30 for California). The annual reminder and cancel-online flow belong to the owner's app and are not built here.
+- **10-day lead enforced, 2026-11-23 (owner approved), without a scheduler:** the API records when each subscriber's notice went out (`price_notices`, written in the same transaction as the `IssueNotices` command) and refuses to charge a renewal (409) until its notice is at least 10 days old. The error gives the time from which it can be charged. A notice logged before this table existed falls back to the time of the latest notices run for that period. That time is never earlier than the real notice, so the fallback can only delay a charge. This is an API rule, not an engine rule: the engine stays clockless and replay is unchanged. The caller still has to run the notices job about 10 days before the billing date, or renewals are charged late rather than early.
+- Not enforced: California's **30-day upper bound** (a notice older than 30 days before the change takes effect). No recommendation was made. Refusing stale notices would also deadlock, because a ceiling is never re-noticed. **Open.** The annual reminder and cancel-online flow belong to the owner's app and are not built here.
 
 Original recommendation, kept for the record: **N3** (N2 plus a subscriber cap), with a 10-day notice default, an annual reminder, cancel-online in the tenant app, and the formula, range and cap shown at consent. It fits the engine's existing machinery (water-fill and carried deficit absorb the ceiling gap) and needs one new engine rule: the charge is capped at the noticed ceiling, and the notice is an event in the command log so the ceiling is auditable in the public ledger. Cost: a small, bounded owner float risk between notice and billing, and a notifications job (already listed as deferred, section 18). **Owner decision needed**; counsel to review the consent and notice text per jurisdiction.
 
@@ -408,7 +418,7 @@ P: 31 CFR 1010.100 (via Cornell LII, https://www.law.cornell.edu/cfr/text/31/101
 S: MTMA agent-of-payee conditions (Colorado HB25-1201 summary, bhfs.com; Cooley 2024; Stinson on Massachusetts); PSD3/PSR status and commercial-agent changes (Freshfields, Taylor Wessing, DLA Piper 2026); California AB 2863 (Fenwick, Davis Wright Tremaine, Kilpatrick Townsend; leginfo.legislature.ca.gov refused automated access, so the statute text was not read directly); FTC rule status (Gibson Dunn, Jones Day 2026); CRD Article 11a (Hogan Lovells, Heuking 2026); Digital Fairness Act (Euronews, 11 November 2026).
 Recalled, not re-fetched this session: PSD2 Article 3(j), EMD2 Article 2(2), UCTD Annex, CJEU cases.
 
-### 20.9 Donations without a cut (proposal; OWNER QUESTION)
+### 20.9 Donations without a cut (owner decided D1 now, D2 later; recipient open)
 
 Owner position 6: stringcan is free and funded by donations. The "no cut" claim must stay literally true and auditable (section 15), so a donation must never ride on a subscriber's charge to an owner, never pass through an owner's Stripe account, and never be a condition of using stringcan.
 
@@ -419,4 +429,33 @@ Options (not built):
 - **D3. A separate donation page on the maintainer's own Stripe account** (Payment Links), linked from the docs and footer, never from inside a tenant's checkout.
 - **Rejected**: tips or "round up for stringcan" in a tenant's checkout, or any application fee, because that is a cut and puts stringcan in the money flow.
 
-**Owner decision, 2026-11-23: D1 now (GitHub Sponsors); D2 later**, once live mode is approved, with stringcan as its own tenant. A `.github/FUNDING.yml` is proposed but deliberately not committed until the GitHub Sponsors account exists. **Still open:** who receives donations, an individual (possibly taxable income, not tax-deductible for donors) or a fiscal host.
+**Owner decision, 2026-11-23: D1 now (GitHub Sponsors); D2 later**, once live mode is approved, with stringcan as its own tenant. A `.github/FUNDING.yml` is proposed but deliberately not committed until the GitHub Sponsors account exists. **Still open:** who receives donations, an individual (possibly taxable income, not tax-deductible for donors) or a fiscal host. No recommendation was made, so the 2026-11-23 approval does not settle it.
+
+### 20.10 Owner approval of the recommendations, 2026-11-23
+
+The owner read this document and said "design doc looks good, all recommendations fly". Every item that had an agent recommendation or a proposed default is **ADOPTED 2026-11-23 (owner approved)**:
+
+| item | adopted as | where | built |
+|---|---|---|---|
+| Float publication | publish the required float; owner keeps at least that much | 20.3 | already (ledger) |
+| Balance-counting rule | `available`, else `current`; depository only; missing or other currency is unverifiable | 20.4 | already (`verify_float`) |
+| Re-check | daily plus on demand | 20.4 | scaffolding: `POST /v1/admin/bank/recheck` for a daily cron |
+| Plaid webhooks | verify JWT and body hash; only mark the status unverifiable | 20.4 | no |
+| Payout-account verification | routing number and last four against the Stripe payout account; refuse a mismatch; owner-declared when unknowable | 20.4 | yes |
+| P1 agent-of-payee terms | template | 20.7, `docs/legal/` | draft for lawyer review |
+| P2 never act for subscribers | written rule and invariant 14 | 20.7, section 14, `docs/legal/` | already true in code |
+| P7 reserve wording | "an owner liability to the pool" | section 8 | doc |
+| P8 EU framing | never in possession of funds | 20.7 | doc |
+| Dormant sweep | after 3 periods | 20.7 | already (rules v2) |
+| Refund targets | last 6 charges | 20.7 | already (rules v2) |
+| Consent when no cap on file | required | 20.8 | already (rules v2) |
+| Absolute credit cap | at or below $2,000 | 20.7 | yes, rules v3 (value $1,000 is a new proposed default) |
+| 10-day lead | enforced | 20.8 | yes, API-side |
+
+Still open (no recommendation was made):
+
+- Donations recipient: an individual or a fiscal host (20.9).
+- Credit that no remembered charge can absorb (20.7 known gap; a possible fix is listed, not recommended).
+- California's 30-day upper bound on notice age (20.8).
+- New, from this round: the value of `credit_cap_ceiling` ($1,000 proposed, 20.7).
+- Lawyer review of everything in 15 and 20.5 before live mode, including the `docs/legal/` drafts; recorded Stripe and Plaid fixtures; whether Stripe exposes a Standard account's external accounts to the platform (20.4).
