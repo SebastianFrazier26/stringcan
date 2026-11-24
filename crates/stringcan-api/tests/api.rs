@@ -11,9 +11,11 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use sqlx::postgres::PgPoolOptions;
 use stringcan_api::auth::{admin_matches, generate_api_key, hash_key};
+use stringcan_api::bank::BankState;
+use stringcan_api::crypto::Keyring;
 use stringcan_api::{router, AppState, MIGRATOR};
 use stringcan_core::FeeModel;
-use stringcan_payments::FakeProcessor;
+use stringcan_payments::{FakeProcessor, JsonFixtureTransport, Plaid};
 use tower::ServiceExt;
 
 const ADMIN: &str = "test-admin-token-0123456789abcdef";
@@ -31,6 +33,14 @@ const WEBHOOK_SECRET: &str = "whsec_test_secret_for_tests";
 async fn build(
     require_connect: bool,
     webhook_secret: Option<&str>,
+) -> Option<(Router, sqlx::PgPool)> {
+    build_with_bank(require_connect, webhook_secret, None).await
+}
+
+async fn build_with_bank(
+    require_connect: bool,
+    webhook_secret: Option<&str>,
+    bank: Option<BankState>,
 ) -> Option<(Router, sqlx::PgPool)> {
     if std::env::var("STRINGCAN_TEST_DB").as_deref() != Ok("1") {
         eprintln!("skipping: STRINGCAN_TEST_DB is not 1");
@@ -53,6 +63,7 @@ async fn build(
         require_connect,
         admin_hash: hash_key(ADMIN),
         snapshot_every: 3,
+        bank,
     });
     Some((app, pool))
 }
@@ -594,4 +605,234 @@ async fn webhook_endpoint_is_off_without_a_secret_and_tenants_cannot_share_onboa
             .0,
         StatusCode::UNAUTHORIZED
     );
+}
+
+const TOKEN_KEY: &str = "k1:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+const ACCESS_TOKEN: &str = "access-sandbox-de3ce8ef-33f8-452c-a685-8671031fc0f6";
+
+fn plaid_ok(body: &str) -> stringcan_payments::JsonResponse {
+    JsonFixtureTransport::ok(body)
+}
+
+fn balance(account: &str, kind: &str, available: f64) -> stringcan_payments::JsonResponse {
+    plaid_ok(&format!(
+        r#"{{"accounts":[{{"account_id":"{account}","type":"{kind}","balances":{{"available":{available},"current":{available},"iso_currency_code":"USD"}}}}],"request_id":"r"}}"#
+    ))
+}
+
+fn exchanged(item: &str) -> stringcan_payments::JsonResponse {
+    plaid_ok(&format!(
+        r#"{{"access_token":"{ACCESS_TOKEN}","item_id":"{item}","request_id":"r"}}"#
+    ))
+}
+
+#[tokio::test]
+async fn bank_routes_are_off_without_plaid() {
+    let Some(app) = app().await else { return };
+    let (_, key) = new_tenant(&app, 1000).await;
+    for (m, uri) in [
+        ("POST", "/v1/bank/link-token"),
+        ("GET", "/v1/bank/float"),
+        ("DELETE", "/v1/bank/link"),
+    ] {
+        assert_eq!(
+            call(&app, m, uri, Some(&key), None).await.0,
+            StatusCode::NOT_FOUND
+        );
+    }
+}
+
+#[tokio::test]
+async fn bank_link_stores_an_encrypted_token_and_checks_only_the_payout_account() {
+    let transport = Arc::new(JsonFixtureTransport::new([
+        plaid_ok(r#"{"link_token":"link-sandbox-1","request_id":"r"}"#),
+        // Linking a credit account is refused and the new item revoked.
+        exchanged("item-credit"),
+        balance("acct-card", "credit", 900.0),
+        plaid_ok(r#"{"request_id":"r"}"#),
+        // Linking the payout checking account.
+        exchanged("item-1"),
+        balance("acct-payout", "depository", 5.0),
+        // Float checks: short, verified, then the bank wants a fresh login.
+        balance("acct-payout", "depository", 5.0),
+        balance("acct-payout", "depository", 20.0),
+        JsonFixtureTransport::status(
+            400,
+            r#"{"error_type":"ITEM_ERROR","error_code":"ITEM_LOGIN_REQUIRED","error_message":"free text"}"#,
+        ),
+        // Unlink.
+        plaid_ok(r#"{"request_id":"r"}"#),
+    ]));
+    let bank = BankState {
+        link: Arc::new(Plaid::new(transport.clone(), "stringcan").unwrap()),
+        keys: Arc::new(Keyring::new(TOKEN_KEY, "").unwrap()),
+    };
+    let Some((app, pool)) = build_with_bank(false, None, Some(bank)).await else {
+        return;
+    };
+    let (tenant, key) = new_tenant(&app, 1000).await;
+    let (_, other_key) = new_tenant(&app, 1000).await;
+
+    let (s, v) = call(&app, "POST", "/v1/bank/link-token", Some(&key), None).await;
+    assert_eq!(
+        (s, v["link_token"].as_str()),
+        (StatusCode::OK, Some("link-sandbox-1"))
+    );
+    let sent = transport.requests();
+    assert_eq!(sent[0].body["products"], json!(["auth"]));
+    assert_eq!(
+        sent[0].body["user"]["client_user_id"],
+        format!("tenant-{tenant}")
+    );
+
+    let (s, _) = call(
+        &app,
+        "POST",
+        "/v1/bank/link",
+        Some(&key),
+        Some(json!({"public_token": "public-sandbox-x", "account_id": "acct-card"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(transport.requests()[3].path, "/item/remove");
+
+    let (s, v) = call(
+        &app,
+        "POST",
+        "/v1/bank/link",
+        Some(&key),
+        Some(json!({"public_token": "public-sandbox-y", "account_id": "acct-payout"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let sent = transport.requests();
+    assert_eq!(
+        sent[5].body["options"]["account_ids"],
+        json!(["acct-payout"])
+    );
+
+    let (key_id, ciphertext): (String, Vec<u8>) = sqlx::query_as(
+        "SELECT token_key_id, token_ciphertext FROM bank_links WHERE tenant_id = $1::uuid",
+    )
+    .bind(&tenant)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(key_id, "k1");
+    assert!(!String::from_utf8_lossy(&ciphertext).contains("access-sandbox"));
+
+    assert_eq!(
+        call(&app, "GET", "/v1/bank/float", Some(&other_key), None)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+
+    // One payment of 1000 net leaves 1000 in the open pool: $5 is short, $20 is enough.
+    let (s, _) = call(
+        &app,
+        "POST",
+        "/v1/payments",
+        Some(&key),
+        Some(json!({"external_ref": "u1"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, v) = call(&app, "GET", "/v1/bank/float", Some(&key), None).await;
+    assert_eq!(v, json!({"status": "short"}));
+    let (_, v) = call(&app, "GET", "/v1/bank/float", Some(&key), None).await;
+    assert_eq!(v, json!({"status": "verified"}));
+    let sent = transport.requests();
+    assert_eq!(sent[7].body["access_token"], ACCESS_TOKEN);
+    assert_eq!(
+        sent[7].body["options"]["account_ids"],
+        json!(["acct-payout"])
+    );
+
+    let (_, ledger) = call(
+        &app,
+        "GET",
+        &format!("/v1/public/{tenant}/ledger"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(ledger["float_check"]["status"], "verified");
+    assert!(!ledger.to_string().contains("acct-payout"));
+
+    let (s, v) = call(&app, "GET", "/v1/bank/float", Some(&key), None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["status"], "unverifiable");
+    assert!(!v.to_string().contains("free text"));
+
+    let (s, _) = call(&app, "DELETE", "/v1/bank/link", Some(&key), None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(transport.requests().last().unwrap().path, "/item/remove");
+    let (_, ledger) = call(
+        &app,
+        "GET",
+        &format!("/v1/public/{tenant}/ledger"),
+        None,
+        None,
+    )
+    .await;
+    assert!(ledger["float_check"].is_null());
+}
+
+#[tokio::test]
+async fn bank_token_is_resealed_under_the_current_key_after_rotation() {
+    const NEW_KEY: &str = "k2:1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100";
+    let old = Arc::new(JsonFixtureTransport::new([
+        exchanged("item-rot"),
+        balance("acct-payout", "depository", 1.0),
+    ]));
+    let Some((app_old, pool)) = build_with_bank(
+        false,
+        None,
+        Some(BankState {
+            link: Arc::new(Plaid::new(old, "stringcan").unwrap()),
+            keys: Arc::new(Keyring::new(TOKEN_KEY, "").unwrap()),
+        }),
+    )
+    .await
+    else {
+        return;
+    };
+    let (tenant, key) = new_tenant(&app_old, 1000).await;
+    let (s, _) = call(
+        &app_old,
+        "POST",
+        "/v1/bank/link",
+        Some(&key),
+        Some(json!({"public_token": "public-sandbox-z", "account_id": "acct-payout"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+
+    let rotated = Arc::new(JsonFixtureTransport::new([balance(
+        "acct-payout",
+        "depository",
+        1.0,
+    )]));
+    let app_new = build_with_bank(
+        false,
+        None,
+        Some(BankState {
+            link: Arc::new(Plaid::new(rotated.clone(), "stringcan").unwrap()),
+            keys: Arc::new(Keyring::new(NEW_KEY, TOKEN_KEY).unwrap()),
+        }),
+    )
+    .await
+    .unwrap()
+    .0;
+    let (_, v) = call(&app_new, "GET", "/v1/bank/float", Some(&key), None).await;
+    assert_eq!(v["status"], "verified");
+    assert_eq!(rotated.requests()[0].body["access_token"], ACCESS_TOKEN);
+    let key_id: String =
+        sqlx::query_scalar("SELECT token_key_id FROM bank_links WHERE tenant_id = $1::uuid")
+            .bind(&tenant)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(key_id, "k2");
 }

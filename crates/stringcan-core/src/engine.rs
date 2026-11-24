@@ -271,6 +271,20 @@ impl Engine {
         self.subs.values().map(|s| s.credit).sum()
     }
 
+    /// Collected (and prefunded) for periods that have not settled yet.
+    pub fn open_pool(&self) -> Cents {
+        self.periods
+            .values()
+            .filter(|p| p.settled.is_none())
+            .map(|p| p.collected() + p.prefund)
+            .sum()
+    }
+
+    /// What the owner must still hold for subscribers (DESIGN 20.3).
+    pub fn required_float(&self) -> Cents {
+        self.reserve + self.credits_outstanding() + self.open_pool()
+    }
+
     /// Earliest period that has not settled.
     pub fn current_period(&self) -> PeriodId {
         self.periods
@@ -331,14 +345,7 @@ impl Engine {
         if let Some((u, s)) = self.subs.iter().find(|(_, s)| s.credit < 0) {
             return fail(format!("negative credit {} for {u}", s.credit));
         }
-        let open_pool: Cents = self
-            .periods
-            .values()
-            .filter(|p| p.settled.is_none())
-            .map(|p| p.collected() + p.prefund)
-            .sum();
-        let held =
-            self.payouts + self.refunds + self.reserve + self.credits_outstanding() + open_pool;
+        let held = self.payouts + self.refunds + self.required_float();
         if held != self.cash_in {
             return fail(format!("cash_in {} != accounted {held}", self.cash_in));
         }

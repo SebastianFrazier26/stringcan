@@ -2,10 +2,13 @@ use std::sync::Arc;
 
 use sqlx::postgres::PgPoolOptions;
 use stringcan_api::auth::hash_key;
+use stringcan_api::bank::BankState;
+use stringcan_api::crypto::Keyring;
 use stringcan_api::{router, AppState, MIGRATOR};
 use stringcan_core::FeeModel;
 use stringcan_payments::{
-    ConnectAccounts, FakeProcessor, PaymentProcessor, ReqwestTransport, StripeConfig, StripeConnect,
+    BankLink, ConnectAccounts, FakeProcessor, PaymentProcessor, Plaid, PlaidConfig,
+    PlaidSandboxTransport, ReqwestTransport, StripeConfig, StripeConnect,
 };
 
 fn required(name: &str) -> String {
@@ -42,6 +45,26 @@ async fn main() {
         .ok()
         .filter(|s| !s.is_empty());
 
+    // Off unless PLAID_CLIENT_ID is set; once set, misconfiguration is fatal
+    // rather than silently running without the float check.
+    let bank = std::env::var("PLAID_CLIENT_ID")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(|_| {
+            let config =
+                PlaidConfig::from_env().expect("PLAID_ENV must be sandbox with valid credentials");
+            let plaid = Plaid::new(
+                PlaidSandboxTransport::new(config).expect("http client"),
+                "stringcan",
+            )
+            .expect("client name");
+            let link: Arc<dyn BankLink> = Arc::new(plaid);
+            BankState {
+                link,
+                keys: Arc::new(Keyring::from_env().unwrap_or_else(|e| panic!("{e}"))),
+            }
+        });
+
     let options = stringcan_api::db::connect_options(
         &required("DATABASE_URL"),
         std::env::var("STRINGCAN_ALLOW_INSECURE_DB").as_deref() == Ok("1"),
@@ -62,6 +85,7 @@ async fn main() {
         require_connect: stripe_mode,
         admin_hash: hash_key(&admin_token),
         snapshot_every: 200,
+        bank,
     };
     let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
     let listener = tokio::net::TcpListener::bind(&addr).await.expect("bind");

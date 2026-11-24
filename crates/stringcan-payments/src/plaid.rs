@@ -114,7 +114,7 @@ pub struct LinkedItem {
 }
 
 /// Plaid rejects `balance` as a Link product; balance comes with whichever
-/// product is initialised. Which one stringcan uses is an open owner question.
+/// product is initialised. stringcan uses `Auth` only (owner decision 2026-11-23).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LinkProduct {
     Auth,

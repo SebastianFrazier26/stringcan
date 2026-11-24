@@ -2,7 +2,9 @@
 //! validates, persists commands, and talks to the payment processor.
 
 pub mod auth;
+pub mod bank;
 pub mod connect;
+pub mod crypto;
 pub mod db;
 pub mod error;
 pub mod routes;
@@ -28,8 +30,13 @@ pub struct AppState {
     pub admin_hash: [u8; 32],
     /// Write a snapshot every N commands per tenant (0 disables).
     pub snapshot_every: i64,
+    /// Plaid bank link and the keyring for its stored token; `/v1/bank/*` is off without it.
+    pub bank: Option<bank::BankState>,
 }
 
 pub fn router(state: AppState) -> Router {
-    routes::router().merge(connect::router()).with_state(state)
+    routes::router()
+        .merge(connect::router())
+        .merge(bank::router())
+        .with_state(state)
 }

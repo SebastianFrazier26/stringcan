@@ -4,6 +4,9 @@ Dated entries, newest first. User-visible and rule changes only.
 
 ## 2026-11-23
 
+- Owner decided the Plaid questions: the access token is stored encrypted in Postgres with a key from the secret store; Link uses the `auth` product only; only the account that receives Stripe payouts counts toward the float.
+- Bank link API (Plaid sandbox only, off unless configured): link token, public-token exchange naming the payout account, unlink, and an on-demand float check that returns only verified, short or unverifiable. The public ledger shows the latest result as `float_check`. Access tokens are sealed with XChaCha20-Poly1305 bound to the tenant, with a key id for rotation.
+
 - Owner positions recorded on the six lawyer questions (design 20.5), dated 2026-11-23 and marked as owner positions, not legal advice; the lawyer review before live mode stays required. Positions: stringcan acts as the owner's payment agent; credits are prepaid balances redeemable for cash; the reserve should not create trust or segregation duties; variable-price notice and consent open pending research; tax confirmed on the owner as merchant of record with Stripe Tax on top of the share; stringcan is free and funded by donations, no application fee.
 - Design 20.7: consequences of those positions (FinCEN exclusions and prepaid-access limits, MTMA agent-of-payee exemption, PSD2 commercial-agent and technical-provider exclusions, EU e-money) and eight proposed design changes for the owner, none adopted.
 - Design 20.8: research on notice and consent for variable monthly prices (EU unfair-terms law and withdrawal button, Digital Fairness Act proposal, California auto-renewal law after AB 2863, FTC rule status), four options and a recommendation, awaiting the owner.

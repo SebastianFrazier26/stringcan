@@ -435,6 +435,8 @@ struct Ledger {
     break_even: bool,
     reserve_cents: Cents,
     credits_outstanding_cents: Cents,
+    /// Last pass/fail check of the owner's payout account against the required float.
+    float_check: Option<crate::bank::PublicFloat>,
     periods: Vec<PeriodView>,
     entries: Vec<LedgerEntry>,
 }
@@ -479,10 +481,12 @@ async fn public_ledger(
             }),
         })
         .collect();
+    let float_check = crate::bank::last_public_check(&mut tx, tenant).await?;
     Ok(Json(Ledger {
         break_even: e.audit().is_ok(),
         reserve_cents: e.reserve(),
         credits_outstanding_cents: e.credits_outstanding(),
+        float_check,
         periods,
         entries: e.journal().iter().map(entry_view).collect(),
     }))
