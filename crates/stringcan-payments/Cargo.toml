@@ -1,6 +1,6 @@
 [package]
 name = "stringcan-payments"
-description = "Payment processor abstraction with a fake and a Stripe Connect client"
+description = "Payment processor abstraction with a fake, a Stripe Connect client and a Plaid balance client"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

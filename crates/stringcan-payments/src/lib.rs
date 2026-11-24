@@ -2,6 +2,7 @@
 //! Stripe is swappable and tests never touch a network.
 
 mod fake;
+mod plaid;
 mod stripe;
 mod transport;
 mod webhook;
@@ -11,6 +12,12 @@ use stringcan_core::Cents;
 use thiserror::Error;
 
 pub use fake::FakeProcessor;
+#[cfg(feature = "http")]
+pub use plaid::PlaidSandboxTransport;
+pub use plaid::{
+    verify_float, AccessToken, BankBalance, BankError, BankLink, FloatCheck, JsonFixtureTransport,
+    JsonRequest, JsonResponse, JsonTransport, LinkProduct, LinkedItem, Plaid, PlaidConfig,
+};
 pub use stripe::{StripeConfig, StripeConnect};
 #[cfg(feature = "http")]
 pub use transport::ReqwestTransport;
