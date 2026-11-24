@@ -5,13 +5,14 @@ use serde::{Deserialize, Serialize};
 use sqlx::types::Json as SqlJson;
 use stringcan_core::{
     Cents, Command, Config, EngineError, EntryKind, JournalEntry, Outcome, PeriodId, Quote,
-    Settlement, Status, MAX_CENTS,
+    RefundLeg, Settlement, Status, MAX_CENTS,
 };
 use stringcan_payments::{ChargeRequest, RefundRequest};
 use uuid::Uuid;
 
 use crate::auth::{generate_api_key, hash_key, Admin, Owner};
 use crate::error::ApiError;
+use crate::notify::{PriceNotice, NOTICE_LEAD_DAYS};
 use crate::{store, AppState};
 
 pub fn router() -> Router<AppState> {
@@ -26,7 +27,12 @@ pub fn router() -> Router<AppState> {
             "/v1/subscribers/{external_ref}/refund-credit",
             post(refund_credit),
         )
+        .route(
+            "/v1/subscribers/{external_ref}/renewal-cap",
+            put(set_renewal_cap),
+        )
         .route("/v1/periods/{id}/upkeep", put(set_upkeep))
+        .route("/v1/periods/{id}/notices", post(issue_notices))
         .route("/v1/periods/settle", post(settle))
         .route("/v1/public/{tenant_id}/ledger", get(public_ledger))
 }
@@ -150,6 +156,15 @@ async fn pay(
     let mut loaded = store::load_locked(&mut tx, tenant).await?;
     let user = store::ensure_user(&mut tx, tenant, &body.external_ref).await?;
     let q = loaded.engine.quote(user)?;
+    match q.blocked {
+        Some(stringcan_core::Blocked::NoticeRequired) => {
+            return Err(EngineError::NoticeRequired.into())
+        }
+        Some(stringcan_core::Blocked::ConsentRequired) => {
+            return Err(EngineError::ConsentRequired.into())
+        }
+        None => {}
+    }
 
     // The lock is held across the processor call: simple and correct, at the cost
     // of serialising a tenant's payments. Revisit with a reservation scheme if needed.
@@ -193,6 +208,7 @@ async fn pay(
         user,
         gross: q.gross_due,
         fee,
+        charge_ref: processor_ref.clone(),
     };
     let Outcome::Paid {
         period,
@@ -280,11 +296,50 @@ async fn refund_credit(
         .await?
         .ok_or(ApiError::NotFound)?;
     let cmd = Command::RefundCredit { user };
-    let Outcome::Refunded(amount) = loaded.engine.execute(&cmd)? else {
-        return Err(ApiError::Internal("unexpected outcome".into()));
+    let outcome = loaded.engine.execute(&cmd).map_err(|e| match e {
+        EngineError::NoRefundableCharge => ApiError::Conflict(
+            "no earlier charge left to refund this credit to; settle it with the owner".into(),
+        ),
+        other => other.into(),
+    })?;
+    let (amount, refund_ref) = match outcome {
+        Outcome::RefundedTo(legs) => {
+            let key = format!("{tenant}:refund:{}", loaded.next_seq);
+            let refs = refund_legs(&st, &mut tx, tenant, &legs, &key).await?;
+            (legs.iter().map(|l| l.amount).sum(), refs.join(","))
+        }
+        Outcome::Refunded(amount) => (
+            amount,
+            refund_v1(&st, &mut tx, tenant, user, amount, &r, loaded.next_seq).await?,
+        ),
+        _ => return Err(ApiError::Internal("unexpected outcome".into())),
     };
-    // A refund goes back to the card, so it must name a charge to refund against
-    // (the subscriber's latest), and cannot exceed that charge.
+    store::append(
+        &mut tx,
+        tenant,
+        &mut loaded,
+        &cmd,
+        Some(&refund_ref),
+        st.snapshot_every,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Json(Refunded {
+        refunded_cents: amount,
+    }))
+}
+
+/// Rules v1: refund the whole credit against the subscriber's latest charge,
+/// refusing when the credit exceeds it.
+async fn refund_v1(
+    st: &AppState,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant: Uuid,
+    user: u64,
+    amount: Cents,
+    external_ref: &str,
+    seq: i64,
+) -> Result<String, ApiError> {
     let charge: Option<(String, Option<i64>)> = sqlx::query_as(
         "SELECT processor_ref, (command->'RecordPayment'->>'gross')::bigint FROM commands
          WHERE tenant_id = $1 AND processor_ref IS NOT NULL AND command @> $2
@@ -294,7 +349,7 @@ async fn refund_credit(
     .bind(SqlJson(
         serde_json::json!({ "RecordPayment": { "user": user } }),
     ))
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut **tx)
     .await?;
     let Some((charge_ref, Some(charge_gross))) = charge else {
         return Err(ApiError::Conflict(
@@ -309,30 +364,136 @@ async fn refund_credit(
     let account: Option<String> =
         sqlx::query_scalar("SELECT stripe_account_id FROM tenants WHERE id = $1")
             .bind(tenant)
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut **tx)
             .await?;
-    let refund_ref = st
+    Ok(st
         .processor
         .refund(&RefundRequest {
-            idempotency_key: format!("{tenant}:{user}:refund:{}", loaded.next_seq),
+            idempotency_key: format!("{tenant}:{user}:refund:{seq}"),
             amount,
-            customer_ref: r,
+            customer_ref: external_ref.to_owned(),
             connected_account: account,
             charge_ref: Some(charge_ref),
         })
-        .await?;
-    store::append(
-        &mut tx,
-        tenant,
-        &mut loaded,
-        &cmd,
-        Some(&refund_ref),
-        st.snapshot_every,
-    )
-    .await?;
+        .await?)
+}
+
+/// Rules v2: one processor refund per leg, each to a charge the subscriber made
+/// on the owner's own account. Runs before the command is appended, so a failed
+/// refund appends nothing; the per-leg idempotency key makes a retry safe.
+async fn refund_legs(
+    st: &AppState,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant: Uuid,
+    legs: &[RefundLeg],
+    key: &str,
+) -> Result<Vec<String>, ApiError> {
+    if legs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let account: Option<String> =
+        sqlx::query_scalar("SELECT stripe_account_id FROM tenants WHERE id = $1")
+            .bind(tenant)
+            .fetch_one(&mut **tx)
+            .await?;
+    let mut refs = Vec::with_capacity(legs.len());
+    for (i, leg) in legs.iter().enumerate() {
+        let customer_ref = store::external_ref(tx, tenant, leg.user).await?;
+        refs.push(
+            st.processor
+                .refund(&RefundRequest {
+                    idempotency_key: format!("{key}:{i}"),
+                    amount: leg.amount,
+                    customer_ref,
+                    connected_account: account.clone(),
+                    charge_ref: Some(leg.charge_ref.clone()),
+                })
+                .await?,
+        );
+    }
+    Ok(refs)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CapBody {
+    /// Most the subscriber agreed to be charged per renewal, fees included.
+    max_charge_cents: Cents,
+}
+
+/// Records the subscriber's express consent to renew up to a cap. The command
+/// row (with its timestamp) is the consent record.
+async fn set_renewal_cap(
+    Owner(tenant): Owner,
+    State(st): State<AppState>,
+    Path(r): Path<String>,
+    Json(b): Json<CapBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    valid_ref(&r)?;
+    valid_cents(b.max_charge_cents)?;
+    let mut tx = st.pool.begin().await?;
+    let mut loaded = store::load_locked(&mut tx, tenant).await?;
+    let user = store::find_user(&mut tx, tenant, &r)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    let cmd = Command::SetRenewalCap {
+        user,
+        cents: b.max_charge_cents,
+    };
+    loaded.engine.execute(&cmd)?;
+    store::append(&mut tx, tenant, &mut loaded, &cmd, None, st.snapshot_every).await?;
     tx.commit().await?;
-    Ok(Json(Refunded {
-        refunded_cents: amount,
+    Ok(Json(
+        serde_json::json!({ "max_charge_cents": b.max_charge_cents }),
+    ))
+}
+
+#[derive(Serialize)]
+struct NoticesBody {
+    period: PeriodId,
+    noticed: usize,
+    consent_needed: usize,
+    lead_days: u32,
+}
+
+/// The notifications job: call it `NOTICE_LEAD_DAYS` before the period's billing
+/// date (no scheduler yet). Notices are delivered before the command commits, so
+/// a delivery failure records nothing and a rerun notices everyone again.
+async fn issue_notices(
+    Owner(tenant): Owner,
+    State(st): State<AppState>,
+    Path(id): Path<PeriodId>,
+) -> Result<Json<NoticesBody>, ApiError> {
+    let mut tx = st.pool.begin().await?;
+    let mut loaded = store::load_locked(&mut tx, tenant).await?;
+    let cmd = Command::IssueNotices { period: id };
+    let Outcome::Noticed(notices) = loaded.engine.execute(&cmd)? else {
+        return Err(ApiError::Internal("unexpected outcome".into()));
+    };
+    for n in &notices {
+        let external_ref = store::external_ref(&mut tx, tenant, n.user).await?;
+        st.notifier
+            .price_notice(&PriceNotice {
+                tenant,
+                external_ref,
+                period: n.period,
+                ceiling_gross: n.ceiling_gross,
+                renewal_cap: loaded.engine.subscriber(n.user).and_then(|s| s.renewal_cap),
+                consent_needed: n.consent_needed,
+                lead_days: NOTICE_LEAD_DAYS,
+            })
+            .await
+            .map_err(|_| ApiError::ProcessorUnavailable)?;
+    }
+    if !notices.is_empty() {
+        store::append(&mut tx, tenant, &mut loaded, &cmd, None, st.snapshot_every).await?;
+    }
+    tx.commit().await?;
+    Ok(Json(NoticesBody {
+        period: id,
+        noticed: notices.len(),
+        consent_needed: notices.iter().filter(|n| n.consent_needed).count(),
+        lead_days: NOTICE_LEAD_DAYS,
     }))
 }
 
@@ -392,7 +553,18 @@ async fn settle(
         return Err(ApiError::Internal("unexpected outcome".into()));
     };
     loaded.engine.audit()?;
-    store::append(&mut tx, tenant, &mut loaded, &cmd, None, st.snapshot_every).await?;
+    let key = format!("{tenant}:settle:{}", loaded.next_seq);
+    let refs = refund_legs(&st, &mut tx, tenant, &s.refunds, &key).await?;
+    let refs = (!refs.is_empty()).then(|| refs.join(","));
+    store::append(
+        &mut tx,
+        tenant,
+        &mut loaded,
+        &cmd,
+        refs.as_deref(),
+        st.snapshot_every,
+    )
+    .await?;
     tx.commit().await?;
     Ok(Json(*s))
 }

@@ -71,6 +71,7 @@ fn main() {
         fee: FeeModel::ZERO,
         reserve_cap_bps: 5_000,
         reserve_surcharge_bps: 500,
+        ..Config::default()
     };
     let on = run(on_cfg, 40_000, 40, &shock_steps(5));
     out.push_str("\n## 3. Churn shock, reserve off vs on\n\n40 subscribers, 400.00 upkeep (10.00 each). In period 7, 15 of the 40 fail to pay and lapse. The 25 who pay were quoted 10.00 before anyone knew, so the period lands 150.00 short.\n\n");

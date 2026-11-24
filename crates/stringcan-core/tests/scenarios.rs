@@ -3,6 +3,10 @@ mod common;
 use common::{cfg_zero_fee, pay, settle, share_of};
 use stringcan_core::{Command, Config, Engine, EngineError, EntryKind, FeeModel, Status};
 
+fn stripe_fee_v1() -> Config {
+    Config::v1()
+}
+
 /// Ten subscribers join a fresh U=1000 app, then period 2 settles.
 fn ten_subscriber_engine() -> Engine {
     let mut e = Engine::new(cfg_zero_fee(), 1000).unwrap();
@@ -206,7 +210,7 @@ fn actual_below_estimate_is_credited_back_not_kept() {
 
 #[test]
 fn credit_is_spent_before_cash_and_can_cover_a_whole_share() {
-    let mut e = Engine::new(Config::default(), 1000).unwrap();
+    let mut e = Engine::new(stripe_fee_v1(), 1000).unwrap();
     pay(&mut e, 1).unwrap();
     settle(&mut e, 400);
     let credit = e.subscriber(1).unwrap().credit;
@@ -219,7 +223,7 @@ fn credit_is_spent_before_cash_and_can_cover_a_whole_share() {
 
 #[test]
 fn fees_are_grossed_up_so_the_pool_receives_the_share() {
-    let mut e = Engine::new(Config::default(), 1000).unwrap();
+    let mut e = Engine::new(stripe_fee_v1(), 1000).unwrap();
     let q = e.quote(1).unwrap();
     assert_eq!(q.share, 1000);
     assert!(q.gross_due > 1000);
@@ -277,7 +281,8 @@ fn underpayment_and_bad_amounts_are_rejected_without_side_effects() {
         e.execute(&Command::RecordPayment {
             user: 1,
             gross: 999,
-            fee: 0
+            fee: 0,
+            charge_ref: None,
         }),
         Err(EngineError::Underpayment)
     );
@@ -285,7 +290,8 @@ fn underpayment_and_bad_amounts_are_rejected_without_side_effects() {
         e.execute(&Command::RecordPayment {
             user: 1,
             gross: -1,
-            fee: 0
+            fee: 0,
+            charge_ref: None,
         }),
         Err(EngineError::AmountOutOfRange)
     );
@@ -303,11 +309,13 @@ fn replaying_commands_reproduces_the_state() {
             user: 1,
             gross: 1000,
             fee: 0,
+            charge_ref: None,
         },
         Command::RecordPayment {
             user: 2,
             gross: 500,
             fee: 0,
+            charge_ref: None,
         },
         Command::Settle {
             actual: 900,
@@ -317,6 +325,7 @@ fn replaying_commands_reproduces_the_state() {
             user: 1,
             gross: 500,
             fee: 0,
+            charge_ref: None,
         },
         Command::Settle {
             actual: 1200,

@@ -7,6 +7,7 @@ pub mod connect;
 pub mod crypto;
 pub mod db;
 pub mod error;
+pub mod notify;
 pub mod routes;
 pub mod store;
 
@@ -32,6 +33,8 @@ pub struct AppState {
     pub snapshot_every: i64,
     /// Plaid bank link and the keyring for its stored token; `/v1/bank/*` is off without it.
     pub bank: Option<bank::BankState>,
+    /// Delivers renewal price notices; `LogNotifier` until a real sender exists.
+    pub notifier: Arc<dyn notify::Notifier>,
 }
 
 pub fn router(state: AppState) -> Router {

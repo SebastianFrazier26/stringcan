@@ -13,6 +13,7 @@ use sqlx::postgres::PgPoolOptions;
 use stringcan_api::auth::{admin_matches, generate_api_key, hash_key};
 use stringcan_api::bank::BankState;
 use stringcan_api::crypto::Keyring;
+use stringcan_api::notify::RecordingNotifier;
 use stringcan_api::{router, AppState, MIGRATOR};
 use stringcan_core::FeeModel;
 use stringcan_payments::{FakeProcessor, JsonFixtureTransport, Plaid};
@@ -42,6 +43,21 @@ async fn build_with_bank(
     webhook_secret: Option<&str>,
     bank: Option<BankState>,
 ) -> Option<(Router, sqlx::PgPool)> {
+    build_with(
+        require_connect,
+        webhook_secret,
+        bank,
+        Arc::new(RecordingNotifier::default()),
+    )
+    .await
+}
+
+async fn build_with(
+    require_connect: bool,
+    webhook_secret: Option<&str>,
+    bank: Option<BankState>,
+    notifier: Arc<RecordingNotifier>,
+) -> Option<(Router, sqlx::PgPool)> {
     if std::env::var("STRINGCAN_TEST_DB").as_deref() != Ok("1") {
         eprintln!("skipping: STRINGCAN_TEST_DB is not 1");
         return None;
@@ -64,6 +80,7 @@ async fn build_with_bank(
         admin_hash: hash_key(ADMIN),
         snapshot_every: 3,
         bank,
+        notifier,
     });
     Some((app, pool))
 }
@@ -185,7 +202,10 @@ async fn auth_is_required_and_scoped() {
 
 #[tokio::test]
 async fn full_cycle_persists_settles_and_publishes_a_pseudonymous_ledger() {
-    let Some(app) = app().await else { return };
+    let notifier = Arc::new(RecordingNotifier::default());
+    let Some((app, _)) = build_with(false, None, None, notifier.clone()).await else {
+        return;
+    };
     let (tenant, key) = new_tenant(&app, 1000).await;
 
     let (s, paid) = call(
@@ -201,7 +221,45 @@ async fn full_cycle_persists_settles_and_publishes_a_pseudonymous_ledger() {
         (paid["charged_gross"].as_i64(), paid["period"].as_i64()),
         (Some(1061), Some(1))
     );
-    // Period 1 is covered by the first payer, so a second payment prefunds period 2.
+    // Period 1 is covered by the first payer, so a second payment renews period 2,
+    // which needs a price notice and the subscriber's consent first (rules v2).
+    let pay_alice = json!({"external_ref": "alice@example.com"});
+    let (s, v) = call(
+        &app,
+        "POST",
+        "/v1/payments",
+        Some(&key),
+        Some(pay_alice.clone()),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    let (s, n) = call(&app, "POST", "/v1/periods/2/notices", Some(&key), None).await;
+    assert_eq!(s, StatusCode::OK, "{n}");
+    assert_eq!(
+        (n["noticed"].as_i64(), n["consent_needed"].as_i64()),
+        (Some(1), Some(1))
+    );
+    let sent = notifier.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        (
+            sent[0].external_ref.as_str(),
+            sent[0].ceiling_gross,
+            sent[0].lead_days
+        ),
+        ("alice@example.com", 1061, 10)
+    );
+    let (s, _) = call(&app, "POST", "/v1/payments", Some(&key), Some(pay_alice)).await;
+    assert_eq!(s, StatusCode::CONFLICT, "no consent on file yet");
+    let (s, v) = call(
+        &app,
+        "PUT",
+        "/v1/subscribers/alice@example.com/renewal-cap",
+        Some(&key),
+        Some(json!({"max_charge_cents": 1061})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
     let (_, again) = call(
         &app,
         "POST",
@@ -440,6 +498,12 @@ fn now() -> i64 {
         .as_secs() as i64
 }
 
+/// Event ids are the webhook idempotency key and the test database persists
+/// across runs, so a fixed id would be a duplicate on every run after the first.
+fn event_id(prefix: &str) -> String {
+    format!("{prefix}_{:032x}", rand::random::<u128>())
+}
+
 fn account_updated(event_id: &str, account: &str, charges: bool) -> String {
     json!({"id": event_id, "type": "account.updated", "account": account,
            "data": {"object": {"charges_enabled": charges, "payouts_enabled": charges, "details_submitted": true}}})
@@ -487,7 +551,7 @@ async fn connect_onboarding_webhook_and_charge_flow() {
     assert_eq!(st["charges_enabled"], false);
 
     // Webhook authenticity: wrong secret, tampered body, stale timestamp, missing header.
-    let body = account_updated("evt_flow_1", &account, true);
+    let body = account_updated(&event_id("evt_flow"), &account, true);
     let good = stringcan_payments::sign_header(body.as_bytes(), WEBHOOK_SECRET, now());
     let forged = stringcan_payments::sign_header(body.as_bytes(), "whsec_wrong", now());
     let stale = stringcan_payments::sign_header(body.as_bytes(), WEBHOOK_SECRET, now() - 3600);
@@ -524,7 +588,7 @@ async fn connect_onboarding_webhook_and_charge_flow() {
     );
 
     // An event for someone else's account must not touch this tenant.
-    let other = account_updated("evt_flow_2", "acct_someoneelse", false);
+    let other = account_updated(&event_id("evt_other"), "acct_someoneelse", false);
     let sig = stringcan_payments::sign_header(other.as_bytes(), WEBHOOK_SECRET, now());
     assert_eq!(webhook(&app, &other, Some(sig)).await.0, StatusCode::OK);
     let (_, st) = call(&app, "GET", "/v1/connect/status", Some(&key), None).await;
@@ -587,7 +651,7 @@ async fn webhook_endpoint_is_off_without_a_secret_and_tenants_cannot_share_onboa
     let Some((app, _)) = build(false, None).await else {
         return;
     };
-    let body = account_updated("evt_off", "acct_x1234", true);
+    let body = account_updated(&event_id("evt_off"), "acct_x1234", true);
     let sig = stringcan_payments::sign_header(body.as_bytes(), WEBHOOK_SECRET, now());
     assert_eq!(
         webhook(&app, &body, Some(sig)).await.0,
@@ -835,4 +899,146 @@ async fn bank_token_is_resealed_under_the_current_key_after_rotation() {
             .await
             .unwrap();
     assert_eq!(key_id, "k2");
+}
+
+async fn pay_ok(app: &Router, key: &str, who: &str) -> Value {
+    let (s, v) = call(
+        app,
+        "POST",
+        "/v1/payments",
+        Some(key),
+        Some(json!({ "external_ref": who })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{who}: {v}");
+    v
+}
+
+#[tokio::test]
+async fn a_failed_notice_delivery_records_nothing() {
+    let notifier = Arc::new(RecordingNotifier::default());
+    let Some((app, _)) = build_with(false, None, None, notifier.clone()).await else {
+        return;
+    };
+    let (tenant, key) = new_tenant(&app, 1000).await;
+    pay_ok(&app, &key, "u1").await;
+    notifier.fail_next(true);
+    let (s, _) = call(&app, "POST", "/v1/periods/2/notices", Some(&key), None).await;
+    assert_eq!(s, StatusCode::BAD_GATEWAY);
+    let (_, ledger) = call(
+        &app,
+        "GET",
+        &format!("/v1/public/{tenant}/ledger"),
+        None,
+        None,
+    )
+    .await;
+    assert!(!ledger.to_string().contains("PriceNotice"));
+    notifier.fail_next(false);
+    let (_, n) = call(&app, "POST", "/v1/periods/2/notices", Some(&key), None).await;
+    assert_eq!(n["noticed"], 1);
+    let (_, n) = call(&app, "POST", "/v1/periods/2/notices", Some(&key), None).await;
+    assert_eq!(n["noticed"], 0, "nobody is noticed twice");
+    let (_, ledger) = call(
+        &app,
+        "GET",
+        &format!("/v1/public/{tenant}/ledger"),
+        None,
+        None,
+    )
+    .await;
+    assert!(ledger.to_string().contains("PriceNotice"));
+}
+
+#[tokio::test]
+async fn credit_over_the_cap_is_refunded_to_the_payers_own_charge_at_settlement() {
+    let Some((app, pool)) = app_with_pool().await else {
+        return;
+    };
+    let (tenant, key) = new_tenant(&app, 100_000).await;
+    pay_ok(&app, &key, "first").await;
+    // "early" prefunds period 2 at half the upkeep; ten more joiners drive the share down.
+    let early = pay_ok(&app, &key, "early").await;
+    assert_eq!(early["period"], 2);
+    for i in 0..10 {
+        pay_ok(&app, &key, &format!("j{i}")).await;
+    }
+    let settle = |actual: i64| json!({ "actual_cents": actual });
+    let (s, _) = call(
+        &app,
+        "POST",
+        "/v1/periods/settle",
+        Some(&key),
+        Some(settle(100_000)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, p2) = call(
+        &app,
+        "POST",
+        "/v1/periods/settle",
+        Some(&key),
+        Some(settle(100_000)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{p2}");
+    // "early" paid 500.00 for a share of about 91.75, so its credit is far above
+    // its cap of two shares; the excess goes back to the card it paid with.
+    let refunds = p2["refunds"].as_array().unwrap();
+    assert!(refunds.iter().all(|r| r["reason"] == "OverCap"), "{p2}");
+    let leg = refunds
+        .iter()
+        .find(|r| r["user"] == 2)
+        .expect("early is refunded");
+    let share = p2["shares"][0]["share"].as_i64().unwrap();
+    let issued = p2["shares"][0]["credit_issued"].as_i64().unwrap();
+    assert_eq!(leg["amount"].as_i64().unwrap(), issued - 2 * share);
+    let early_charge: String = sqlx::query_scalar(
+        "SELECT c.processor_ref FROM commands c JOIN subscribers s
+           ON s.tenant_id = c.tenant_id AND (c.command->'RecordPayment'->>'user')::bigint = s.user_id
+         WHERE c.tenant_id = $1::uuid AND s.external_ref = 'early'",
+    )
+    .bind(&tenant)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(leg["charge_ref"], early_charge.as_str());
+    let (_, ledger) = call(
+        &app,
+        "GET",
+        &format!("/v1/public/{tenant}/ledger"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(ledger["break_even"], true);
+}
+
+#[tokio::test]
+async fn tenants_created_before_rules_v2_keep_v1_behaviour() {
+    let Some((app, pool)) = app_with_pool().await else {
+        return;
+    };
+    let key = generate_api_key();
+    let v1_config = json!({"fee": {"bps": 290, "fixed": 30}, "reserve_cap_bps": 5000, "reserve_surcharge_bps": 0});
+    sqlx::query(
+        "INSERT INTO tenants (name, api_key_hash, engine_config, first_upkeep_cents) VALUES ('old', $1, $2, 1000)",
+    )
+    .bind(hash_key(&key).as_slice())
+    .bind(sqlx::types::Json(v1_config))
+    .execute(&pool)
+    .await
+    .unwrap();
+    pay_ok(&app, &key, "alice").await;
+    let again = pay_ok(&app, &key, "alice").await;
+    assert_eq!(again["period"], 2, "v1 renews without a notice");
+    let (s, _) = call(&app, "POST", "/v1/periods/2/notices", Some(&key), None).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let versions: Vec<i32> =
+        sqlx::query_scalar("SELECT DISTINCT c.rules_version FROM commands c JOIN tenants t ON t.id = c.tenant_id WHERE t.name = 'old' AND t.api_key_hash = $1")
+            .bind(hash_key(&key).as_slice())
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(versions, vec![1]);
 }

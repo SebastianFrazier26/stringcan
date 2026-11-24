@@ -4,6 +4,11 @@ Dated entries, newest first. User-visible and rule changes only.
 
 ## 2026-11-23
 
+- Owner adopted credit safeguards P3 to P6 and price-notice option N3 with a 10-day notice; recorded donations as GitHub Sponsors now and stringcan-as-its-own-tenant later (recipient still open). P1, P2, P7 and P8 remain proposed.
+- Rules v2 for new tenants (existing tenants keep v1 and replay unchanged): renewals need a logged price notice and the subscriber's consented cap, and are charged at most the noticed ceiling, with any gap carried as a shortfall; credit is refunded only to the subscriber's own recent charges, capped per subscriber at the larger of $100 or two shares (the excess refunded at settlement), never moved between subscribers, and swept back to the card after 3 dormant periods.
+- API: `POST /v1/periods/{id}/notices` (notifications job; logs only, no email yet) and `PUT /v1/subscribers/{ref}/renewal-cap`; settlement and credit refunds now issue one processor refund per charge.
+- Fixed a webhook test that failed when run twice against the same database.
+
 - Owner decided the Plaid questions: the access token is stored encrypted in Postgres with a key from the secret store; Link uses the `auth` product only; only the account that receives Stripe payouts counts toward the float.
 - Bank link API (Plaid sandbox only, off unless configured): link token, public-token exchange naming the payout account, unlink, and an on-demand float check that returns only verified, short or unverifiable. The public ledger shows the latest result as `float_check`. Access tokens are sealed with XChaCha20-Poly1305 bound to the tenant, with a key id for rotation.
 

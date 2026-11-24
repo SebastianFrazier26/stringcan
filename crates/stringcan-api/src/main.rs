@@ -86,6 +86,7 @@ async fn main() {
         admin_hash: hash_key(&admin_token),
         snapshot_every: 200,
         bank,
+        notifier: Arc::new(stringcan_api::notify::LogNotifier),
     };
     let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
     let listener = tokio::net::TcpListener::bind(&addr).await.expect("bind");

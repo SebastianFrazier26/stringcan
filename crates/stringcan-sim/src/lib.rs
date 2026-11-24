@@ -1,7 +1,9 @@
 //! Deterministic scenario scripts over the real engine, used for the demo report
 //! and for tests that pin the headline behaviours.
 
-use stringcan_core::{Cents, Command, Config, Engine, FeeModel, Outcome, Status, UserId};
+use stringcan_core::{
+    Blocked, Cents, Command, Config, Engine, FeeModel, Outcome, Status, UserId, MAX_CENTS,
+};
 
 #[derive(Clone, Debug, Default)]
 pub struct Step {
@@ -34,15 +36,39 @@ pub struct Run {
     pub engine: Engine,
 }
 
-fn pay(e: &mut Engine, user: UserId) {
-    if let Ok(q) = e.quote(user) {
-        let fee = e.fee_model().fee(q.gross_due);
-        let _ = e.execute(&Command::RecordPayment {
-            user,
-            gross: q.gross_due,
-            fee,
-        });
+/// Simulated subscribers accept every renewal: a missing notice is issued and
+/// consent is given to any price, so the sim measures pricing, not consent.
+pub fn pay(e: &mut Engine, user: UserId) {
+    let Ok(q) = e.quote(user) else { return };
+    match q.blocked {
+        Some(Blocked::NoticeRequired) => {
+            if e.execute(&Command::IssueNotices { period: q.period })
+                .is_ok()
+            {
+                pay(e, user);
+            }
+            return;
+        }
+        Some(Blocked::ConsentRequired) => {
+            if e.execute(&Command::SetRenewalCap {
+                user,
+                cents: MAX_CENTS,
+            })
+            .is_ok()
+            {
+                pay(e, user);
+            }
+            return;
+        }
+        None => {}
     }
+    let fee = e.fee_model().fee(q.gross_due);
+    let _ = e.execute(&Command::RecordPayment {
+        user,
+        gross: q.gross_due,
+        fee,
+        charge_ref: Some(format!("sim_{}", e.journal().len())),
+    });
 }
 
 fn pending(e: &Engine) -> Vec<UserId> {
@@ -133,8 +159,7 @@ pub fn run(cfg: Config, upkeep: Cents, subscribers: u64, steps: &[Step]) -> Run 
 pub fn zero_fee() -> Config {
     Config {
         fee: FeeModel::ZERO,
-        reserve_cap_bps: 5_000,
-        reserve_surcharge_bps: 0,
+        ..Config::default()
     }
 }
 

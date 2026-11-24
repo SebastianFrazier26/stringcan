@@ -3,7 +3,9 @@ mod common;
 
 use common::pay;
 use proptest::prelude::*;
-use stringcan_core::{water_fill, Cents, Command, Config, Engine, FeeModel, Outcome};
+use stringcan_core::{
+    water_fill, Cents, Command, Config, Engine, FeeModel, Outcome, Status, CURRENT_RULES, RULES_V1,
+};
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
@@ -52,6 +54,8 @@ enum Op {
     Settle(i64),
     SetUpkeep(i64),
     Refund(u64),
+    Notice,
+    Cap(u64, i64),
 }
 
 fn op() -> impl Strategy<Value = Op> {
@@ -62,6 +66,8 @@ fn op() -> impl Strategy<Value = Op> {
         2 => (0i64..4_000).prop_map(Op::Settle),
         1 => (0i64..4_000).prop_map(Op::SetUpkeep),
         1 => (0u64..14).prop_map(Op::Refund),
+        2 => Just(Op::Notice),
+        2 => (0u64..14, 0i64..3_000).prop_map(|(u, c)| Op::Cap(u, c)),
     ]
 }
 
@@ -70,12 +76,49 @@ fn config() -> impl Strategy<Value = Config> {
         prop_oneof![Just(FeeModel::ZERO), Just(FeeModel::STRIPE_US_CARD)],
         prop_oneof![Just(0u32), Just(1_000), Just(5_000), Just(20_000)],
         prop_oneof![Just(0u32), Just(500), Just(1_500)],
+        prop_oneof![Just(RULES_V1), Just(CURRENT_RULES)],
+        prop_oneof![Just(0i64), Just(150), Just(10_000)],
+        1u32..4,
     )
-        .prop_map(|(fee, cap, sur)| Config {
+        .prop_map(|(fee, cap, sur, rules, floor, dormant)| Config {
             fee,
             reserve_cap_bps: cap,
             reserve_surcharge_bps: sur,
+            rules_version: rules,
+            credit_cap_floor: floor,
+            dormant_after_periods: dormant,
         })
+}
+
+fn command(engine: &Engine, op: &Op, seq: usize) -> Option<Command> {
+    Some(match *op {
+        Op::Join(u, jitter) => {
+            let q = engine.quote(u).ok()?;
+            Command::RecordPayment {
+                user: u,
+                gross: q.gross_due,
+                fee: (engine.fee_model().fee(q.gross_due) + jitter).min(q.gross_due),
+                charge_ref: Some(format!("pi_{seq}")),
+            }
+        }
+        Op::Cancel(u) => Command::Cancel { user: u },
+        Op::Lapse(u) => Command::Lapse { user: u },
+        Op::Settle(a) => Command::Settle {
+            actual: a,
+            evidence: None,
+        },
+        Op::SetUpkeep(c) => Command::SetUpkeep {
+            period: engine.current_period(),
+            cents: c,
+        },
+        Op::Refund(u) => Command::RefundCredit { user: u },
+        Op::Notice => Command::IssueNotices {
+            period: engine
+                .quote(u64::MAX)
+                .map_or(engine.current_period(), |q| q.period),
+        },
+        Op::Cap(u, c) => Command::SetRenewalCap { user: u, cents: c },
+    })
 }
 
 proptest! {
@@ -89,22 +132,16 @@ proptest! {
     ) {
         let mut e = Engine::new(cfg, first).unwrap();
         let mut log: Vec<Command> = Vec::new();
-        for o in ops {
+        for (n, o) in ops.into_iter().enumerate() {
             let before = e.clone();
-            let cmd = match o {
-                Op::Join(u, jitter) => match e.quote(u) {
-                    Ok(q) => {
-                        let fee = (e.fee_model().fee(q.gross_due) + jitter).min(q.gross_due);
-                        Command::RecordPayment { user: u, gross: q.gross_due, fee }
+            if let Op::Join(u, _) = o {
+                if let Ok(q) = e.quote(u) {
+                    if let Some(c) = q.ceiling {
+                        prop_assert!(q.share <= c, "share {} above noticed ceiling {c}", q.share);
                     }
-                    Err(_) => continue,
-                },
-                Op::Cancel(u) => Command::Cancel { user: u },
-                Op::Lapse(u) => Command::Lapse { user: u },
-                Op::Settle(a) => Command::Settle { actual: a, evidence: None },
-                Op::SetUpkeep(c) => Command::SetUpkeep { period: e.current_period(), cents: c },
-                Op::Refund(u) => Command::RefundCredit { user: u },
-            };
+                }
+            }
+            let Some(cmd) = command(&e, &o, n) else { continue };
             match e.execute(&cmd) {
                 Ok(out) => {
                     log.push(cmd);
@@ -115,6 +152,18 @@ proptest! {
                         prop_assert!(shares <= s.target);
                         let contributed: Cents = s.shares.iter().map(|r| r.contributed).sum();
                         prop_assert_eq!(contributed, shares + credits);
+                        if cfg.rules_version >= 2 {
+                            // After settlement no one holds credit above their cap, or
+                            // stays dormant with credit, unless no charge is left to refund to.
+                            for (u, sub) in e.subscribers() {
+                                let room: Cents = sub.charges.iter().map(|c| c.gross - c.refunded).sum();
+                                let cap = cfg.credit_cap_floor.max(2 * sub.last_share);
+                                let dormant = matches!(sub.status, Status::Lapsed | Status::Ended)
+                                    && e.current_period() > sub.paid_through + cfg.dormant_after_periods;
+                                prop_assert!(room == 0 || sub.credit <= cap, "{u} over cap");
+                                prop_assert!(room == 0 || !dormant || sub.credit == 0, "{u} dormant credit kept");
+                            }
+                        }
                     }
                 }
                 Err(_) => prop_assert_eq!(&e, &before, "rejected command must not mutate"),
@@ -140,22 +189,8 @@ proptest! {
     ) {
         let mut e = Engine::new(cfg, first).unwrap();
         let mut log: Vec<Command> = Vec::new();
-        for o in ops {
-            let cmd = match o {
-                Op::Join(u, jitter) => match e.quote(u) {
-                    Ok(q) => Command::RecordPayment {
-                        user: u,
-                        gross: q.gross_due,
-                        fee: (e.fee_model().fee(q.gross_due) + jitter).min(q.gross_due),
-                    },
-                    Err(_) => continue,
-                },
-                Op::Cancel(u) => Command::Cancel { user: u },
-                Op::Lapse(u) => Command::Lapse { user: u },
-                Op::Settle(a) => Command::Settle { actual: a, evidence: None },
-                Op::SetUpkeep(c) => Command::SetUpkeep { period: e.current_period(), cents: c },
-                Op::Refund(u) => Command::RefundCredit { user: u },
-            };
+        for (n, o) in ops.into_iter().enumerate() {
+            let Some(cmd) = command(&e, &o, n) else { continue };
             if e.execute(&cmd).is_ok() {
                 log.push(cmd);
             }

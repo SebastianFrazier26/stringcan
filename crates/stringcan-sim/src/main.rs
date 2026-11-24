@@ -87,16 +87,7 @@ fn main() -> ExitCode {
                 Event::Renew(u) if rng.pct(fail) => {
                     let _ = engine.execute(&Command::Lapse { user: u });
                 }
-                Event::Renew(u) | Event::Join(u) => {
-                    if let Ok(q) = engine.quote(u) {
-                        let fee = engine.fee_model().fee(q.gross_due);
-                        let _ = engine.execute(&Command::RecordPayment {
-                            user: u,
-                            gross: q.gross_due,
-                            fee,
-                        });
-                    }
-                }
+                Event::Renew(u) | Event::Join(u) => stringcan_sim::pay(&mut engine, u),
             }
         }
 

@@ -5,9 +5,12 @@ use uuid::Uuid;
 
 use crate::error::ApiError;
 
-/// Bump when engine behaviour changes. Old rows must stay replayable, so a new
-/// version needs the previous rules kept alongside (see CLAUDE.md).
-pub const RULES_VERSION: i32 = 1;
+/// The rules version lives in each tenant's engine config (`Config::rules_version`),
+/// fixed at creation, so a tenant's log always replays under the rules it was
+/// written with. New tenants get `stringcan_core::CURRENT_RULES`.
+fn rules_of(cfg: &Config) -> i32 {
+    cfg.rules_version as i32
+}
 
 pub struct Loaded {
     pub engine: Engine,
@@ -55,8 +58,10 @@ async fn load(
         .fetch_optional(&mut **tx)
         .await?
         .ok_or(ApiError::NotFound)?;
-    let snapshot = load_snapshot_state(tx, tenant).await?;
+    let version = rules_of(&cfg.0);
+    let snapshot = load_snapshot_state(tx, tenant, version).await?;
     let (mut engine, mut next_seq) = match snapshot {
+        Some((engine, _)) if engine.config() != &cfg.0 => (Engine::new(cfg.0, first)?, 0),
         Some(found) => found,
         None => (Engine::new(cfg.0, first)?, 0),
     };
@@ -69,7 +74,7 @@ async fn load(
     .fetch_all(&mut **tx)
     .await?;
     for (seq, version, cmd) in rows {
-        if version != RULES_VERSION {
+        if version != rules_of(&cfg.0) {
             return Err(ApiError::Internal(format!(
                 "command {seq} has unsupported rules version {version}"
             )));
@@ -96,13 +101,14 @@ async fn load(
 async fn load_snapshot_state(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
+    version: i32,
 ) -> Result<Option<(Engine, i64)>, ApiError> {
     let row: Option<(i64, serde_json::Value)> = sqlx::query_as(
         "SELECT next_seq, state FROM snapshots WHERE tenant_id = $1 AND rules_version = $2
          ORDER BY next_seq DESC LIMIT 1",
     )
     .bind(tenant)
-    .bind(RULES_VERSION)
+    .bind(version)
     .fetch_optional(&mut **tx)
     .await?;
     let Some((next_seq, state)) = row else {
@@ -130,7 +136,7 @@ pub async fn append(
     )
     .bind(tenant)
     .bind(loaded.next_seq)
-    .bind(RULES_VERSION)
+    .bind(rules_of(loaded.engine.config()))
     .bind(Json(cmd))
     .bind(processor_ref)
     .execute(&mut **tx)
@@ -143,7 +149,7 @@ pub async fn append(
         )
         .bind(tenant)
         .bind(loaded.next_seq)
-        .bind(RULES_VERSION)
+        .bind(rules_of(loaded.engine.config()))
         .bind(Json(&loaded.engine))
         .execute(&mut **tx)
         .await?;

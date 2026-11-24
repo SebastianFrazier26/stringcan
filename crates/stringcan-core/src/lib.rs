@@ -10,8 +10,9 @@ mod money;
 mod waterfill;
 
 pub use engine::{
-    Command, Config, Contribution, Engine, EntryKind, JournalEntry, Outcome, Period, PeriodId,
-    Quote, Settlement, ShareRecord, Status, Subscriber, UserId,
+    Blocked, Charge, Command, Config, Contribution, Engine, EntryKind, JournalEntry, Notice,
+    Outcome, Period, PeriodId, Quote, RefundLeg, RefundReason, Settlement, ShareRecord, Status,
+    Subscriber, UserId, CURRENT_RULES, MAX_REMEMBERED_CHARGES, RULES_V1,
 };
 pub use error::EngineError;
 pub use money::{Cents, FeeModel, MAX_CENTS};

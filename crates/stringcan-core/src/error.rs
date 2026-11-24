@@ -22,6 +22,14 @@ pub enum EngineError {
     InvalidState,
     #[error("no credit to refund")]
     NoCredit,
+    #[error("a card payment must carry its processor charge id")]
+    MissingChargeRef,
+    #[error("renewal needs a price notice for this period first")]
+    NoticeRequired,
+    #[error("renewal price is above the subscriber's consented cap; fresh consent needed")]
+    ConsentRequired,
+    #[error("no earlier charge left to refund this credit to")]
+    NoRefundableCharge,
     #[error("audit failed: {0}")]
     Audit(String),
 }
