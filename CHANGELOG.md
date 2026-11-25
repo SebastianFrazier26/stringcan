@@ -4,6 +4,7 @@ Dated entries, newest first. User-visible and rule changes only.
 
 ## 2026-11-24
 
+- Owner decided the donations recipient: donations go to the owner personally through GitHub Sponsors, not a fiscal host (design 20.9). `.github/FUNDING.yml` adds the Sponsor button. Donations never touch a tenant ledger or a subscriber's charge.
 - Owner set the rules v3 absolute credit ceiling to $500 (`credit_cap_ceiling = 50_000` cents), replacing the proposed $1,000. The credit cap floor must stay at or below the ceiling. Tenants keep the ceiling they were created with.
 
 ## 2026-11-23

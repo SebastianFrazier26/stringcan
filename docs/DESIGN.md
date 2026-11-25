@@ -325,7 +325,7 @@ Which choices help avoid stringcan being treated as a money transmitter or payme
   3. *Reserve.* Question: whether the reserve (a held-back customer fund inside the owner's account) creates trust-account or segregation duties for the owner. **Owner position: it should not create trust-account or segregation duties.** Status: position recorded; counsel review open. See 20.7 for wording in this doc that pulls the other way.
   4. *Variable monthly prices.* Question: consumer-law treatment of variable monthly prices (notice, consent, auto-renewal rules in the EU and California). **Owner position: needs research before deciding. OPEN.** Research done 2026-11-23, see 20.8; the notice/consent design awaits the owner.
   5. *Tax.* **Owner confirmed (2026-11-23): the owner is merchant of record and tax sits on the owner; Stripe Tax on the connected account calculates tax on top of the share, outside the pool.** The engine continues to model only the pre-tax share. Counsel still confirms the owner's own registration duties per jurisdiction.
-  6. *Platform funding.* Question: the platform's responsibility under Stripe's Connect terms, and how stringcan pays its own upkeep with "no application fee". **Owner position (2026-11-23): stringcan is free; its upkeep is paid by donations. No application fee, no cut.** How donations work without breaking "no cut" is an open owner question, see 20.9. Stripe's Connect platform terms are still to be read by counsel.
+  6. *Platform funding.* Question: the platform's responsibility under Stripe's Connect terms, and how stringcan pays its own upkeep with "no application fee". **Owner position (2026-11-23): stringcan is free; its upkeep is paid by donations. No application fee, no cut.** How donations work without breaking "no cut" is decided in 20.9 (GitHub Sponsors to the owner personally, 2026-11-24). Stripe's Connect platform terms are still to be read by counsel.
 - **Scoping the platform key:** the platform key can create charges on all connected accounts. Practical mitigations: keep it test-only until review, restrict it with Stripe restricted keys to the needed resources (accounts, account links, payment intents, refunds), store it only in the secret manager, and never log it (the code redacts it in Debug).
 - **Data:** only opaque Stripe ids (`cus_`, `pm_`) are stored; no card data, no emails. The one stored credential is the Plaid access token, encrypted (20.4).
 
@@ -418,7 +418,7 @@ P: 31 CFR 1010.100 (via Cornell LII, https://www.law.cornell.edu/cfr/text/31/101
 S: MTMA agent-of-payee conditions (Colorado HB25-1201 summary, bhfs.com; Cooley 2024; Stinson on Massachusetts); PSD3/PSR status and commercial-agent changes (Freshfields, Taylor Wessing, DLA Piper 2026); California AB 2863 (Fenwick, Davis Wright Tremaine, Kilpatrick Townsend; leginfo.legislature.ca.gov refused automated access, so the statute text was not read directly); FTC rule status (Gibson Dunn, Jones Day 2026); CRD Article 11a (Hogan Lovells, Heuking 2026); Digital Fairness Act (Euronews, 11 November 2026).
 Recalled, not re-fetched this session: PSD2 Article 3(j), EMD2 Article 2(2), UCTD Annex, CJEU cases.
 
-### 20.9 Donations without a cut (owner decided D1 now, D2 later; recipient open)
+### 20.9 Donations without a cut (owner decided D1 now, D2 later; recipient: the owner personally)
 
 Owner position 6: stringcan is free and funded by donations. The "no cut" claim must stay literally true and auditable (section 15), so a donation must never ride on a subscriber's charge to an owner, never pass through an owner's Stripe account, and never be a condition of using stringcan.
 
@@ -429,7 +429,7 @@ Options (not built):
 - **D3. A separate donation page on the maintainer's own Stripe account** (Payment Links), linked from the docs and footer, never from inside a tenant's checkout.
 - **Rejected**: tips or "round up for stringcan" in a tenant's checkout, or any application fee, because that is a cut and puts stringcan in the money flow.
 
-**Owner decision, 2026-11-23: D1 now (GitHub Sponsors); D2 later**, once live mode is approved, with stringcan as its own tenant. A `.github/FUNDING.yml` is proposed but deliberately not committed until the GitHub Sponsors account exists. **Still open:** who receives donations, an individual (possibly taxable income, not tax-deductible for donors) or a fiscal host. No recommendation was made, so the 2026-11-23 approval does not settle it.
+**Owner decision, 2026-11-23: D1 now (GitHub Sponsors); D2 later**, once live mode is approved, with stringcan as its own tenant. **Owner decision, 2026-11-24: donations go to the owner personally, through GitHub Sponsors (`SebastianFrazier26`), not a fiscal host.** `.github/FUNDING.yml` is committed with `github: [SebastianFrazier26]`; the Sponsor button works once that GitHub Sponsors profile is live. Consequences the owner accepted: donations are the owner's personal income (possibly taxable) and are not tax-deductible for donors. They stay outside the product: no tenant ledger, Connect account or subscriber charge is involved, so "no cut" stays true. Moving to a fiscal host later only changes `FUNDING.yml`.
 
 ### 20.10 Owner approval of the recommendations, 2026-11-23
 
@@ -454,7 +454,6 @@ The owner read this document and said "design doc looks good, all recommendation
 
 Still open (no recommendation was made):
 
-- Donations recipient: an individual or a fiscal host (20.9).
 - Credit that no remembered charge can absorb (20.7 known gap; a possible fix is listed, not recommended).
 - California's 30-day upper bound on notice age (20.8).
 - Lawyer review of everything in 15 and 20.5 before live mode, including the `docs/legal/` drafts; recorded Stripe and Plaid fixtures; whether Stripe exposes a Standard account's external accounts to the platform (20.4).
