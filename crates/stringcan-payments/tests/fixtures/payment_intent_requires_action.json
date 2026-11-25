@@ -1,0 +1,1 @@
+{"id":"pi_3TestAction","object":"payment_intent","amount":1061,"currency":"usd","status":"requires_action","next_action":{"type":"use_stripe_sdk"}}

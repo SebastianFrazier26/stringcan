@@ -1,0 +1,4 @@
+{"accounts":[
+{"account_id":"BxBXxLj1m4HMXBm9WZZmCWVbPjX16EHwv99vp","balances":{"available":100,"current":110,"limit":null,"iso_currency_code":"USD","unofficial_currency_code":null},"mask":"0000","name":"Plaid Checking","official_name":"Plaid Gold Standard 0% Interest Checking","type":"depository","subtype":"checking"}
+],"numbers":{"ach":[{"account":"1111222233330000","account_id":"BxBXxLj1m4HMXBm9WZZmCWVbPjX16EHwv99vp","routing":"011401533","wire_routing":"021000021"}],"bacs":[],"eft":[],"international":[]},
+"item":{"item_id":"M5eVJqLnv3tbzdngLDp9FL5OlDNxlNhlE55op","institution_id":"ins_109508"},"request_id":"m8MDnv9okwxFNBV"}

@@ -1,0 +1,25 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: stringcan
+      POSTGRES_PASSWORD: stringcan
+      POSTGRES_DB: stringcan
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stringcan"]
+      interval: 5s
+      retries: 10
+  api:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://stringcan:stringcan@db:5432/stringcan
+      STRINGCAN_ALLOW_INSECURE_DB: "1"
+      STRINGCAN_ADMIN_TOKEN: ${STRINGCAN_ADMIN_TOKEN:?set STRINGCAN_ADMIN_TOKEN (24+ chars) in .env}
+      BIND_ADDR: 0.0.0.0:8080
+    ports:
+      - "127.0.0.1:8080:8080"

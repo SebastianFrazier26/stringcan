@@ -1,0 +1,28 @@
+[package]
+name = "stringcan-payments"
+description = "Payment processor abstraction with a fake, a Stripe Connect client and a Plaid balance client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+async-trait = "0.1"
+hex = "0.4"
+hmac = "0.12"
+reqwest = { version = "0.13.3", default-features = false, features = ["rustls", "form"], optional = true }
+serde_json = "1"
+sha2 = "0.10"
+stringcan-core = { path = "../stringcan-core" }
+subtle = "2.6"
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
+
+[features]
+# The only code that can reach the network. Off for unit tests; the API binary enables it.
+http = ["dep:reqwest"]
+
+[lints]
+workspace = true

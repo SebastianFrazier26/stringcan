@@ -1,0 +1,1 @@
+{"id":"pi_3TestSucceeded","object":"payment_intent","amount":1061,"currency":"usd","status":"succeeded","customer":"cus_TestSub","payment_method":"pm_TestCard","latest_charge":{"id":"ch_3TestCharge","object":"charge","paid":true,"balance_transaction":{"id":"txn_3Test","object":"balance_transaction","amount":1061,"fee":61,"net":1000,"currency":"usd"}}}

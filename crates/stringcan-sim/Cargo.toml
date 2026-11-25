@@ -1,0 +1,13 @@
+[package]
+name = "stringcan-sim"
+description = "Seeded simulator for the stringcan engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+stringcan-core = { path = "../stringcan-core" }
+
+[lints]
+workspace = true

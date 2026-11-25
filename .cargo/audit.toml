@@ -1,0 +1,5 @@
+# Both crates appear in Cargo.lock only because sqlx lists its MySQL and SQLite
+# backends as optional dependencies; `cargo tree -i <crate>` shows neither is
+# built. Re-check when upgrading sqlx. Added 2026-11-23.
+[advisories]
+ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2026-0459"]

@@ -1,0 +1,1 @@
+{"display_message":null,"error_code":"INVALID_PUBLIC_TOKEN","error_message":"provided public token is in an invalid format. expected format: public-<environment>-<identifier>","error_type":"INVALID_INPUT","request_id":"g2Fy1L6RjCqgzQ8"}
